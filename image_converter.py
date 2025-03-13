@@ -31,9 +31,9 @@ for img_file in raw_image_files:
   new_file_name = "new_" + img_file
   output_path = os.path.join(output_dir,new_file_name) 
   try:
-    raw_image = Image.open(input_path)
-    output_img = raw_image.rotate(final_angle).resize(target_size).convert('RGB').save(output_path, target_format)
-    print(f"Processed: {input_path} -> {output_path}")
+    with Image.open(input_path) as raw_image:
+      output_img = raw_image.rotate(final_angle).resize(target_size).convert('RGB').save(output_path, target_format)
+      print(f"Processed: {input_path} -> {output_path}")
   except FileNotFoundError:
     print(f"Error: Input file '{input_path} not found.")
   except Exception as e:
