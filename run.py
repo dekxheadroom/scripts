@@ -57,6 +57,6 @@ def post_feedback(url, feedback_data):
 
 if __name__ == "__main__":
     source_dir = "/data/feedback"
-    url = "http://34.168.221.147/feedback"
+    url = "http://34.168.221.147/feedback/"
     feedback_data = create_feedback_listdict(source_dir)
     post_feedback(url, feedback_data)
