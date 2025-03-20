@@ -56,13 +56,12 @@ def process_data(data):
       max_year_sales = total_sales
       popular_year = year
 
-  summary = [
-    "The {} generated the most revenue: ${} <br/>".format(format_car(max_revenue["car"]), max_revenue["revenue"]), 
-    "The {} had the most sales: {} <br/>".format(format_car(max_sales["car"]), max_sales["total_sales"]),
-    "The most popular year was {} with {} sales <br/>".format(popular_year, max_year_sales)
-  ]
+  summary = []
+  summary.append("The {} generated the most revenue: ${}".format(format_car(max_revenue["car"]), max_revenue["revenue"]))
+  summary.append("The {} had the most sales: {}".format(format_car(max_sales["car"]), max_sales["total_sales"]))
+  summary.append("The most popular year was {} with {} sales <br/>".format(popular_year, max_year_sales))
 
-  return "\n".join(summary)
+  return summary
 
 
 def cars_dict_to_table(car_data):
@@ -77,15 +76,19 @@ def main(argv):
   """Process the JSON data and generate a full report out of it."""
   data = load_data("car_sales.json")
   summary = process_data(data)
-  print(summary)
   # TODO: turn this into a PDF report
-  reports.generate("/tmp/cars.pdf", "Car Report", summary, cars_dict_to_table(data))
+  #generate a paragraph that contains the necessary summary
+  paragraph = "</br>".join(summary)
+  table_data = cars_dict_to_table(data)
+  title = "Sales Summary for Last Month"
+  attachment = "/tmp/cars.pdf"
+  reports.generate(attachment, title, paragraph, table_data)
 
   # TODO: send the PDF report as an email attachment
   sender = "automation@example.com"
   receiver = "student@example.com"
   subject = "Sales Summar For Last Month"
-  body = "The same summary from the PDF, but using \n between the lines"
+  body = "\n".join(summary)
 
   message = emails.generate(sender, receiver, subject, body, "/tmp/cars.pdf")
   emails.send(message)
