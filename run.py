@@ -30,7 +30,7 @@ def create_feedback_listdict(source_dir):
             
             if len(lines) < 4: #check for feedback files with missing entries
                 print(f"Error: file '{feedback}' may not contain all necessary entries")
-                continuels
+                continue
 
             feedback_dict = {"title": lines[0].strip(), "name": lines[1].strip(), "date":lines[2].strip(), "feedback": lines[3].strip()}
             feedback_listdict.append(feedback_dict)
