@@ -91,50 +91,38 @@ def check_localhost():
     except socket.gaierror:
         logging.warning("Error - localhost could not be resolved.")
 
-def generate_html_email(sender, recipient, subject, cpu_logs, disk_logs, mem_logs, host_logs):
-    """Generates an HTML email with a table from log data."""
+def generate_html_email(sender, recipient, all_logs):
+    """Generates an HTML email with a dynamic subject line only when there is warning."""
 
     message = MIMEMultipart("alternative")
     message["From"] = sender
     message["To"] = recipient
-    message["Subject"] = subject
-
-    # Create the HTML table
-    html_table = "<table><tr><th>Case</th><th>Subject line</th></tr>"
     
-    # CPU logs
-    for log in cpu_logs:
-        html_table += f"<tr><td>CPU usage is over 80%</td><td>{log}</td></tr>"
+    if all_logs: #if there are any warning entries in logs
+        try:
+            parts = all_logs[0].split(" - WARNING - ") #split log entry using " - WARNING -" as delimiter
+            if len(parts) == 2:
+                message["Subject"] = parts[1].strip() #Extract warning message as subject header
+            else:
+                message["Subject"] = "System Warning" #if split fails, provide a default subject
+        except IndexError:
+            message["Subject"] = "System Warning" #if split fails, provide a default subject
+        # Create the HTML part
+        
+        html_part = MIMEText("""
+        <html>
+            <head></head>
+            <body>
+                <p>Please check your system and resolve the issue as soon as possible.</p>
+            </body>
+        </html>
+        """, "html")
 
-    # Disk logs
-    for log in disk_logs:
-        html_table += f"<tr><td>Available disk space is lower than 20%</td><td>{log}</td></tr>"
-
-    # Memory logs
-    for log in mem_logs:
-        html_table += f"<tr><td>Available memory is less than 100MB</td><td>{log}</td></tr>"
-
-    # Host logs
-    for log in host_logs:
-        html_table += f"<tr><td>hostname 'localhost' cannot be resolved to 127.0.0.1</td><td>{log}</td></tr>"
-
-    html_table += "</table>"
-
-    # Create the HTML part
-    html_part = MIMEText(f"""
-    <html>
-      <head></head>
-      <body>
-        {html_table}
-        <p>Please check your system and resolve the issue as soon as possible.</p>
-      </body>
-    </html>
-    """, "html")
-
-    # Attach the HTML part
-    message.attach(html_part)
-
-    return message
+        # Attach the HTML part
+        message.attach(html_part)
+        return message
+    else:
+        return None #No email needed
 
 def send_email(message):
     """Sends the message to the configured SMTP server."""
@@ -152,6 +140,10 @@ if __name__ == "__main__":
     disk_threshold = 80 #percent
     mem_threshold = 100 #MB
 
+    #define sender and receiver
+    sender = "automation@example.com"
+    recipient = "student@example.com"
+            
     #keep on looping until ^C
     while True: 
         cpu_warning_log = capture_warning_logs(check_cpu_usage, cpu_threshold)
@@ -159,16 +151,12 @@ if __name__ == "__main__":
         mem_warning_log = capture_warning_logs(check_mem_full, mem_threshold)
         host_warning_log = capture_warning_logs(check_localhost)
 
-       # Generate and send the email
-        sender = "automation@example.com"
-        recipient = "student@example.com"
-        subject = "System Health Check Report"
-        email_message = generate_html_email(sender, recipient, subject, cpu_warning_log, disk_warning_log, mem_warning_log, host_warning_log)
-        send_email(email_message)
+        #combine logs into a single list
+        all_logs = (cpu_warning_log + disk_warning_log + mem_warning_log + host_warning_log)
+
+       # Generate and send the email if there are entries in all_logs
+        email_message = generate_html_email(sender, recipient, all_logs)
+        if email_message:
+            send_email(email_message)
 
         time.sleep(60) #wait for 60 seconds. 
-
-
-        
-
-
