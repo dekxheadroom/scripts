@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-
+"""
+this script is to extract fruit data from txt files in "description" directory,
+prepare a PDF report, and then email it
+"""
 import reports
 import emails
 from datetime import date
-import re
 import os
 import logging
 
@@ -20,19 +22,17 @@ def process_fruit_data(data_dir):
             try:
                 with open(filepath, "r") as raw_text:
                     lines = raw_text.readlines()
-                    if len(lines) < 3: #check for feedback files with missing entries
+                    if len(lines) < 2: #check for feedback files with missing entries
                         logging.warning(f"Error: file '{filepath}' may not contain all necessary entries")
                         continue          
                     
                     desc_dict ={
                         "name":lines[0].strip(), 
-                        "weight":int(re.search(r'\d+', lines[1].strip()).group(0)), 
+                        "weight":lines[1].strip() 
                     }
                     desc_listdict.append(desc_dict)
             except FileNotFoundError:
                 logging.error(f"Error: File not found:{filepath}")
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Error uploading {filepath}:{e}")
             except Exception as e:
                 logging.error(f"An unexpected error occurred:{e}")
   except FileNotFoundError:
@@ -45,12 +45,13 @@ def process_fruit_data(data_dir):
   return desc_listdict
 
 def prepare_fruits_weight_paragraph(data_dir):
+  """prepares paragraph summarising fruit names and weights"""
   fruit_data = process_fruit_data(data_dir)
   summary = []
   if fruit_data:
     for item in fruit_data:
-      summary.append(f"name: {item[name]}")
-      summary.append(f"weight: {item[weight]} lbs")
+      summary.append(f"name: {item['name']}")
+      summary.append(f"weight: {item['weight']}")
       summary.append("")
   return summary
 
@@ -58,9 +59,9 @@ if __name__ == "__main__":
     """pdf report parameters"""
     data_dir = os.path.expanduser("~/supplier-data/descriptions/")
     attachment = "/tmp/processed.pdf"
-    title = f"Processed Update on {date.today().strftime("%B %d, %Y")}"
+    title = f"Processed Update on {date.today()}"
     summary = prepare_fruits_weight_paragraph(data_dir)
-    paragraph = "</br>".join(summary)
+    paragraph = "<br/>".join(summary)
   
     """email parameters"""
     sender = "automation@example.com"
