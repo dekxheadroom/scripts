@@ -64,9 +64,9 @@ def check_disk_full(disk_threshold):
             else:
                 logging.info(f"Disk space on {partition.mountpoint} okay. Current usage: {percent_used}%") 
         except PermissionError:
-            logging.debug(f"{disk_usage_percentages[partition.mountpoint]} permission denied")
+            logging.debug(f"{partition.mountpoint} permission denied")
         except Exception as e:
-            logging.error(f"{disk_usage_percentages[partition.mountpoint]} Error:{e}")
+            logging.error(f"{partition.mountpoint} Error:{e}")
 
 def check_mem_full(mem_threshold):
     """Send warning if memory drops below admin-defined threshold."""
@@ -88,7 +88,7 @@ def check_localhost():
     except socket.gaierror:
         logging.warning("Error - localhost could not be resolved.")
 
-def generate_html_email(sender, recipient, subject, log_data):
+def generate_html_email(sender, recipient, subject, cpu_logs, disk_logs, mem_logs, host_logs):
     """Generates an HTML email with a table from log data."""
 
     message = MIMEMultipart("alternative")
