@@ -6,6 +6,7 @@ system statistics:CPU usage, disk space, available memory and name resolution
 import logging
 import socket
 import psutil
+import time
 
 #configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -89,10 +90,20 @@ if __name__ == "__main__":
     disk_threshold = 80 #percent
     mem_threshold = 100 #MB
 
-    cpu_warning_log = capture_warning_logs(check_cpu_usage, cpu_threshold)
-    disk_warning_log = capture_warning_logs(check_disk_full, disk_threshold)
-    mem_warning_log = capture_warning_logs(check_mem_full, mem_threshold)
-    host_warning_log = capture_warning_logs(check_localhost)
+    #keep on looping until ^C
+    while True: 
+        cpu_warning_log = capture_warning_logs(check_cpu_usage, cpu_threshold)
+        disk_warning_log = capture_warning_logs(check_disk_full, disk_threshold)
+        mem_warning_log = capture_warning_logs(check_mem_full, mem_threshold)
+        host_warning_log = capture_warning_logs(check_localhost)
+
+        #print captured logs
+        print("CPU warning logs:", cpu_warning_log)
+        print("Disk warning logs:", disk_warning_log)
+        print("Memory warning logs:", mem_warning_log)
+        print("Host warning logs:", host_warning_log)
+
+        time.sleep(60) #wait for 60 seconds. 
 
 
         
