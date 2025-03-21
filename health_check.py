@@ -3,8 +3,8 @@
 This script is alert admin on health of system resources:
     CPU usage, disk space, available memory and host name resolution
 Script monitors resource usage in background, checking every 60s. 
-Upon tripping warning threshold or misconfig, warning log is captured, and parsed
-as a HTML-formatted email with table summarising case, before sending to intended receipant  
+Upon tripping warning threshold or misconfig, generate an email with dyanmic subject header 
+based on warning case, before sending to intended receipant  
 """
 import logging
 import socket
