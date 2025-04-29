@@ -5,4 +5,4 @@ That was the last boss fight with intermediate bosses to clear.
 
 Certificate verification: https://coursera.org/verify/professional-cert/18W72DFKCR0N
 
-Have also started adding scripts modified from Hack The Box Academy's exercises
+Have also started adding Python scripts modified from Hack The Box Academy's exercises
