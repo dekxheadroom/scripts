@@ -123,21 +123,43 @@ secure_ssh() {
     log_info "Hardening SSH configuration..."
     local ssh_config="/etc/ssh/sshd_config"
     
-    # Set custom port
-    sudo sed -i "s/^#?Port .*/Port $SSH_PORT/" "$ssh_config"
+    log_info "Updating SSH settings (robustly)..."
+
+    # --- Robustly set SSH Port ---
+    # We use grep -qE (quiet, extended regex) to check
+    if grep -qE "^#?Port " "$ssh_config"; then
+        # If it exists, replace it
+        sed -i "s/^#?Port .*/Port $SSH_PORT/" "$ssh_config"
+    else
+        # If not, add it to the end of the file
+        echo "Port $SSH_PORT" >> "$ssh_config"
+    fi
     
-    # Disable root login
-    sudo sed -i "s/^#?PermitRootLogin .*/PermitRootLogin no/" "$ssh_config"
+    # --- Robustly disable root login ---
+    if grep -qE "^#?PermitRootLogin" "$ssh_config"; then
+        sed -i "s/^#?PermitRootLogin .*/PermitRootLogin no/" "$ssh_config"
+    else
+        echo "PermitRootLogin no" >> "$ssh_config"
+    fi
     
-    # Disable password auth
-    sudo sed -i "s/^#?PasswordAuthentication .*/PasswordAuthentication no/" "$ssh_config"
+    # --- Robustly disable password auth ---
+    if grep -qE "^#?PasswordAuthentication" "$ssh_config"; then
+        sed -i "s/^#?PasswordAuthentication .*/PasswordAuthentication no/" "$ssh_config"
+    else
+        echo "PasswordAuthentication no" >> "$ssh_config"
+    fi
     
-    # Disable challenge-response auth
-    sudo sed -i "s/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication no/" "$ssh_config"
+    # --- Robustly disable challenge-response auth ---
+    if grep -qE "^#?KbdInteractiveAuthentication" "$ssh_config"; then
+        sed -i "s/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication no/" "$ssh_config"
+    else
+        echo "KbdInteractiveAuthentication no" >> "$ssh_config"
+    fi
     
     log_info "Adding authorized key for $SUDO_USER_NAME..."
     local auth_key_file="$USER_HOME_DIR/.ssh/authorized_keys"
     
+    # No sudo needed here, we are already root
     mkdir -p "$USER_HOME_DIR/.ssh"
     chmod 700 "$USER_HOME_DIR/.ssh"
     cat "$SSH_KEY_PATH" >> "$auth_key_file"
@@ -147,8 +169,8 @@ secure_ssh() {
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$USER_HOME_DIR/.ssh"
     
     log_info "Enabling and restarting SSH service..."
-    sudo systemctl enable ssh.service
-    sudo systemctl restart ssh
+    systemctl enable ssh.service
+    systemctl restart ssh
     
     log_success "SSH server hardened and restarted on port $SSH_PORT."
 }
