@@ -192,7 +192,7 @@ setup_clamav() {
 Description=Run ClamAV scan on home directory
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/clamscan -r --infected %h
+ExecStart=/usr/bin/clamscan -r --infected --log=%h/clamscan_report.log %h
 EOL
 
     log_info "Creating ClamAV user timer..."
