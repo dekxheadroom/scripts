@@ -32,7 +32,7 @@ REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-ser
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "This script must be run as root. Please use 'sudo ./harden.sh'"
+        log_error "This script must be run as root. Please use 'sudo ./harden_linux.sh'"
         exit 1
     fi
     
