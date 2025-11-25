@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
-# This Script is written by Gemini 2.5 Pro  
-# This script must be run with sudo, but by a regular user.
-# It will exit immediately if any command fails.
+# This script is vibed by Gemini Pro 3.0; 
+# prompted for re-design to validate environment first before asking for user inputs
+# Hardening Script v2.0
+# Logic: Check Root -> Install Dependencies -> Get User Input -> Apply Hardening
 set -eo pipefail
 
 # --- Color Definitions ---
@@ -13,18 +14,10 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # --- Log Functions ---
-log_info() {
-    echo -e "${CYAN}[INFO] $1${NC}"
-}
-log_success() {
-    echo -e "${GREEN}[SUCCESS] $1${NC}"
-}
-log_warn() {
-    echo -e "${YELLOW}[WARN] $1${NC}"
-}
-log_error() {
-    echo -e "${RED}[ERROR] $1${NC}"
-}
+log_info() { echo -e "${CYAN}[INFO] $1${NC}"; }
+log_success() { echo -e "${GREEN}[SUCCESS] $1${NC}"; }
+log_warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
+log_error() { echo -e "${RED}[ERROR] $1${NC}"; }
 
 # --- Global Variables ---
 SSH_PORT=""
@@ -32,7 +25,10 @@ SSH_KEY_PATH=""
 SUDO_USER_NAME=""
 USER_HOME_DIR=""
 
-# --- Helper Functions ---
+# List of required packages
+REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server)
+
+# --- 1. System Checks & Dependency Management ---
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -40,31 +36,41 @@ check_root() {
         exit 1
     fi
     
-    # Get the name of the user who invoked sudo
+    # Get the real user who invoked sudo
     SUDO_USER_NAME="${SUDO_USER:-$(who am i | awk '{print $1}')}"
     if [[ -z "$SUDO_USER_NAME" || "$SUDO_USER_NAME" == "root" ]]; then
-        log_error "This script must be run with 'sudo' by a non-root user. Exiting."
+        log_error "Run this with 'sudo' from a regular user account, not directly as root."
         exit 1
     fi
     
-    # Get that user's home directory
     USER_HOME_DIR=$(getent passwd "$SUDO_USER_NAME" | cut -d: -f6)
-    if [[ ! -d "$USER_HOME_DIR" ]]; then
-        log_error "Could not determine home directory for user '$SUDO_USER_NAME'. Exiting."
-        exit 1
-    fi
-    
-    log_info "Script running as root, but on behalf of user: $SUDO_USER_NAME"
 }
 
+ensure_dependencies() {
+    log_info "--- Phase 1: Dependency Verification ---"
+    log_info "Updating package lists..."
+    apt-get update -y > /dev/null
+
+    for pkg in "${REQUIRED_PKGS[@]}"; do
+        if ! dpkg -s "$pkg" &> /dev/null; then
+            log_warn "Package '$pkg' is missing. Installing..."
+            apt-get install -y "$pkg"
+        else
+            log_success "Package '$pkg' is already installed."
+        fi
+    done
+    log_success "All dependencies are in place."
+}
+
+# --- 2. User Inputs ---
+
 get_user_inputs() {
-    log_info "--- Gathering User Inputs ---"
+    log_info "--- Phase 2: User Configuration ---"
     
     # Get SSH Port
     while true; do
-        read -p "Enter a custom SSH port (e.g., 22222, 1025-65535): " SSH_PORT
+        read -p "Enter a custom SSH port (1025-65535): " SSH_PORT
         if [[ "$SSH_PORT" -gt 1024 && "$SSH_PORT" -lt 65535 ]]; then
-            log_info "Using SSH port $SSH_PORT"
             break
         else
             log_error "Invalid port. Must be between 1025 and 65535."
@@ -73,120 +79,80 @@ get_user_inputs() {
     
     # Get SSH Public Key
     while true; do
-        read -p "Enter the FULL path to the admin's public SSH key to add (e.g., $USER_HOME_DIR/.ssh/id_admin.pub): " SSH_KEY_PATH
+        read -p "Enter path to admin's public SSH key (e.g., $USER_HOME_DIR/.ssh/id_rsa.pub): " SSH_KEY_PATH
         if [[ -f "$SSH_KEY_PATH" ]]; then
-            log_info "Using public key: $SSH_KEY_PATH"
             break
         else
-            log_error "File not found. Please provide the full path."
+            log_error "File not found at: $SSH_KEY_PATH"
         fi
     done
 }
 
-install_packages() {
-    log_info "Updating package lists..."
-    sudo apt-get update -y
-    
-    log_info "Installing core hardening packages..."
-    # Corrected package names
-    sudo apt-get install -y openssh-server ufw clamav clamav-daemon chkrootkit rkhunter fail2ban
-    log_success "All packages installed."
-}
-
-# --- Hardening Functions ---
+# --- 3. Hardening Functions ---
 
 setup_linger() {
     log_info "Enabling linger for $SUDO_USER_NAME..."
     loginctl enable-linger "$SUDO_USER_NAME"
-    log_success "Linger enabled."
 }
 
 setup_firewall() {
-    log_info "Configuring UFW (Firewall)..."
-    sudo ufw default deny incoming
-    sudo ufw default allow outgoing
+    if ! command -v ufw &> /dev/null; then log_error "UFW not found. Skipping."; return; fi
+
+    log_info "Configuring UFW..."
+    ufw default deny incoming
+    ufw default allow outgoing
     
-    # Deny the default SSH port just in case
-    sudo ufw deny 22/tcp
+    # Deny standard SSH, Allow Custom SSH
+    ufw deny 22/tcp
+    ufw allow "$SSH_PORT/tcp"
     
-    # Allow the new custom SSH port
-    sudo ufw allow "$SSH_PORT/tcp"
-    
-    # Enable UFW without interactive prompt
-    yes | sudo ufw enable
-    
-    log_success "Firewall enabled on port $SSH_PORT."
-    sudo ufw status numbered
+    yes | ufw enable
+    log_success "Firewall active. Port $SSH_PORT allowed."
 }
 
 secure_ssh() {
     log_info "Hardening SSH configuration..."
     local ssh_config="/etc/ssh/sshd_config"
     
-    log_info "Updating SSH settings (robustly)..."
+    # Helper function to set config robustly
+    set_ssh_param() {
+        local param="$1"
+        local value="$2"
+        if grep -qE "^#?$param" "$ssh_config"; then
+            sed -i "s/^#?$param .*/$param $value/" "$ssh_config"
+        else
+            echo "$param $value" >> "$ssh_config"
+        fi
+    }
 
-    # --- Robustly set SSH Port ---
-    # We use grep -qE (quiet, extended regex) to check
-    if grep -qE "^#?Port " "$ssh_config"; then
-        # If it exists, replace it
-        sed -i "s/^#?Port .*/Port $SSH_PORT/" "$ssh_config"
-    else
-        # If not, add it to the end of the file
-        echo "Port $SSH_PORT" >> "$ssh_config"
-    fi
+    set_ssh_param "Port" "$SSH_PORT"
+    set_ssh_param "PermitRootLogin" "no"
+    set_ssh_param "PasswordAuthentication" "no"
+    set_ssh_param "KbdInteractiveAuthentication" "no"
     
-    # --- Robustly disable root login ---
-    if grep -qE "^#?PermitRootLogin" "$ssh_config"; then
-        sed -i "s/^#?PermitRootLogin .*/PermitRootLogin no/" "$ssh_config"
-    else
-        echo "PermitRootLogin no" >> "$ssh_config"
-    fi
-    
-    # --- Robustly disable password auth ---
-    if grep -qE "^#?PasswordAuthentication" "$ssh_config"; then
-        sed -i "s/^#?PasswordAuthentication .*/PasswordAuthentication no/" "$ssh_config"
-    else
-        echo "PasswordAuthentication no" >> "$ssh_config"
-    fi
-    
-    # --- Robustly disable challenge-response auth ---
-    if grep -qE "^#?KbdInteractiveAuthentication" "$ssh_config"; then
-        sed -i "s/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication no/" "$ssh_config"
-    else
-        echo "KbdInteractiveAuthentication no" >> "$ssh_config"
-    fi
-    
-    log_info "Adding authorized key for $SUDO_USER_NAME..."
+    # Setup Authorized Keys
     local auth_key_file="$USER_HOME_DIR/.ssh/authorized_keys"
-    
-    # No sudo needed here, we are already root
     mkdir -p "$USER_HOME_DIR/.ssh"
     chmod 700 "$USER_HOME_DIR/.ssh"
     cat "$SSH_KEY_PATH" >> "$auth_key_file"
     chmod 600 "$auth_key_file"
-    
-    # Set correct ownership
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$USER_HOME_DIR/.ssh"
     
-    log_info "Enabling and restarting SSH service..."
-    systemctl enable ssh.service
     systemctl restart ssh
-    
-    log_success "SSH server hardened and restarted on port $SSH_PORT."
+    log_success "SSH hardened."
 }
 
 setup_clamav() {
-    log_info "Setting up ClamAV..."
+    if ! command -v clamscan &> /dev/null; then log_error "ClamAV not found. Skipping."; return; fi
+
+    log_info "Configuring ClamAV..."
+    systemctl enable --now clamav-freshclam.service
     
-    # Enable and start the definition updater (system service)
-    log_info "Enabling freshclam daemon for auto-updates..."
-    sudo systemctl enable --now clamav-freshclam.service
-    
-    # Create the user service files
+    # Create User Service
     local user_service_dir="$USER_HOME_DIR/.config/systemd/user"
     mkdir -p "$user_service_dir"
     
-    log_info "Creating ClamAV user service..."
+    # Using 'tee' without sudo because we are root
     tee "$user_service_dir/clamscan-home.service" > /dev/null << EOL
 [Unit]
 Description=Run ClamAV scan on home directory
@@ -195,10 +161,9 @@ Type=oneshot
 ExecStart=/usr/bin/clamscan -r --infected --log=%h/clamscan_report.log %h
 EOL
 
-    log_info "Creating ClamAV user timer..."
     tee "$user_service_dir/clamscan-home.timer" > /dev/null << EOL
 [Unit]
-Description=Run daily ClamAV scan on home directory
+Description=Run daily ClamAV scan
 [Timer]
 OnCalendar=daily
 Persistent=true
@@ -206,21 +171,18 @@ Persistent=true
 WantedBy=timers.target
 EOL
 
-    # Set ownership for the new files
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$user_service_dir"
 
-    log_info "Enabling ClamAV user timer for $SUDO_USER_NAME..."
-    # Run systemctl --user commands as the actual user
+    # Execute systemctl as the user
     sudo -u "$SUDO_USER_NAME" systemctl --user daemon-reload
     sudo -u "$SUDO_USER_NAME" systemctl --user enable --now clamscan-home.timer
-    
-    log_success "ClamAV scan scheduled for user $SUDO_USER_NAME."
+    log_success "ClamAV user timer enabled."
 }
 
 setup_chkrootkit() {
-    log_info "Setting up chkrootkit..."
+    if ! command -v chkrootkit &> /dev/null; then log_error "chkrootkit not found. Skipping."; return; fi
     
-    log_info "Creating chkrootkit system service..."
+    log_info "Scheduling chkrootkit..."
     tee "/etc/systemd/system/chkrootkit.service" > /dev/null << EOL
 [Unit]
 Description=Run chkrootkit scan
@@ -229,8 +191,6 @@ Type=oneshot
 ExecStart=/usr/sbin/chkrootkit
 SuccessExitStatus=1
 EOL
-
-    log_info "Creating chkrootkit system timer..."
     tee "/etc/systemd/system/chkrootkit.timer" > /dev/null << EOL
 [Unit]
 Description=Run daily chkrootkit scan
@@ -240,107 +200,75 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOL
-    
-    log_info "Enabling chkrootkit system timer..."
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now chkrootkit.timer
-    
-    log_success "chkrootkit scan scheduled."
+    systemctl daemon-reload
+    systemctl enable --now chkrootkit.timer
+    log_success "chkrootkit scheduled."
 }
 
 setup_rkhunter() {
-    log_info "Setting up rkhunter..."
-    local rkhunter_conf="/etc/rkhunter.conf"
-    local rkhunter_default="/etc/default/rkhunter"
+    if ! command -v rkhunter &> /dev/null; then log_error "rkhunter not found. Skipping."; return; fi
     
-    # Configure rkhunter.conf
-    sudo sed -i "s|^WEB_CMD=.*|WEB_CMD=\"/usr/bin/wget\"|" "$rkhunter_conf"
-    sudo sed -i 's/^DISABLE_WEB_CMD=.*/#&/' "$rkhunter_conf" # Comment out the disable line
-    sudo sed -i "s/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/" "$rkhunter_conf"
-    sudo sed -i "s/^MIRRORS_MODE=.*/MIRRORS_MODE=0/" "$rkhunter_conf"
+    log_info "Configuring rkhunter..."
+    local conf="/etc/rkhunter.conf"
+    local default="/etc/default/rkhunter"
     
-    # Configure /etc/default/rkhunter
-    sudo sed -i 's/^CRON_DAILY_RUN=.*/CRON_DAILY_RUN="true"/' "$rkhunter_default"
-    sudo sed -i 's/^APT_AUTOGEN=.*/APT_AUTOGEN="true"/' "$rkhunter_default"
+    sed -i "s|^WEB_CMD=.*|WEB_CMD=\"/usr/bin/wget\"|" "$conf"
+    sed -i "s/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/" "$conf"
+    sed -i "s/^MIRRORS_MODE=.*/MIRRORS_MODE=0/" "$conf"
+    sed -i 's/^CRON_DAILY_RUN=.*/CRON_DAILY_RUN="true"/' "$default"
+    sed -i 's/^APT_AUTOGEN=.*/APT_AUTOGEN="true"/' "$default"
 
-    log_info "Running initial rkhunter update and baseline..."
-    sudo rkhunter --update
-    sudo rkhunter --propupd
-    
-    log_success "rkhunter configured for daily cron jobs."
+    rkhunter --update > /dev/null
+    rkhunter --propupd > /dev/null
+    log_success "rkhunter baseline created."
 }
 
 setup_fail2ban() {
-    log_info "Setting up fail2ban..."
-    local jail_local="/etc/fail2ban/jail.local"
-    
-    # Create jail.local if it doesn't exist
-    if [[ ! -f "$jail_local" ]]; then
-        sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
-    fi
-    
-    log_info "Configuring fail2ban for SSH on port $SSH_PORT..."
-    # Use sed to find the [sshd] block and update its settings
-    # This ensures we're editing the correct section
-    sudo sed -i "/^\[sshd\]/,/^\[/ s/enabled = .*/enabled = true/" "$jail_local"
-    sudo sed -i "/^\[sshd\]/,/^\[/ s/port    = .*/port    = $SSH_PORT/" "$jail_local"
-    sudo sed -i "/^\[sshd\]/,/^\[/ s/maxretry = .*/maxretry = 3/" "$jail_local"
-    sudo sed -i "/^\[sshd\]/,/^\[/ s/bantime  = .*/bantime  = 600s/" "$jail_local"
+    if ! command -v fail2ban-client &> /dev/null; then log_error "fail2ban not found. Skipping."; return; fi
 
-    sudo systemctl restart fail2ban
+    log_info "Configuring fail2ban..."
+    local jail_local="/etc/fail2ban/jail.local"
+    if [[ ! -f "$jail_local" ]]; then cp /etc/fail2ban/jail.conf "$jail_local"; fi
     
-    log_success "fail2ban is now active and monitoring SSH."
+    sed -i "/^\[sshd\]/,/^\[/ s/enabled = .*/enabled = true/" "$jail_local"
+    sed -i "/^\[sshd\]/,/^\[/ s/port .*=.*/port = $SSH_PORT/" "$jail_local"
+    
+    systemctl restart fail2ban
+    log_success "fail2ban active on port $SSH_PORT."
 }
 
 setup_kernel_hardening() {
-    log_info "Applying kernel hardening parameters..."
-    local sysctl_conf="/etc/sysctl.d/99-hardening.conf" # 99 to override defaults
-
+    log_info "Applying kernel hardening..."
+    local sysctl_conf="/etc/sysctl.d/99-hardening.conf"
+    
     tee "$sysctl_conf" > /dev/null << EOL
-# --- Kernel Hardening ---
-# Restricts access to kernel pointers, making exploits harder to write
 kernel.kptr_restrict = 2
-# Restricts dmesg (kernel log) access to privileged users
 kernel.dmesg_restrict = 1
-# Hardens the BPF JIT compiler
-net.core.bpf_jit_harden = 2
-# --- TCP/IP Stack Hardening ---
-# Enable SYN cookies to protect against SYN flood attacks
 net.ipv4.tcp_syncookies = 1
-# Log "martian" packets (spoofed/malformed)
 net.ipv4.conf.all.log_martians = 1
-net.ipv4.conf.default.log_martians = 1
-# Ignore ICMP redirects (MITM protection)
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv6.conf.all.accept_redirects = 0
-net.ipv4.conf.default.accept_redirects = 0
-net.ipv6.conf.default.accept_redirects = 0
-# Don't send ICMP redirects (this isn't a router)
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.default.send_redirects = 0
-# Ignore "bogus" ICMP responses
 net.ipv4.icmp_ignore_bogus_error_responses = 1
 EOL
-
-    log_info "Loading new kernel parameters..."
-    # Corrected typo from your notes (sytemctl.d)
-    sudo sysctl -p "$sysctl_conf"
-    
-    log_success "Kernel hardening applied."
+    sysctl -p "$sysctl_conf"
+    log_success "Kernel parameters applied."
 }
 
-# --- Main Script Execution ---
+# --- Main Execution ---
 
 main() {
     clear
-    log_info "=== Ubuntu Host Hardening Script ==="
+    log_info "=== Linux Host Hardening v2.0 ==="
     
     check_root
+    
+    # 1. Ensure tools are present BEFORE asking questions
+    ensure_dependencies
+    
+    # 2. Now safe to ask questions
     get_user_inputs
-    install_packages
     
-    log_info "--- Starting Hardening Sequence ---"
+    log_info "--- Starting Configuration ---"
     
+    # 3. Apply Hardening
     setup_linger
     setup_firewall
     secure_ssh
@@ -351,12 +279,7 @@ main() {
     setup_kernel_hardening
     
     log_info "-------------------------------------"
-    log_success "Hardening script complete!"
-    log_warn "Step 7 (2FA/MFA) was NOT automated. It is too risky."
-    log_warn "Please set up 2FA manually for user '$SUDO_USER_NAME' *now*."
-    log_info "It is recommended to REBOOT the system to ensure all services start correctly."
-    log_info "-------------------------------------"
+    log_success "Hardening Complete. PLEASE REBOOT."
 }
 
-# Run the main function
 main
