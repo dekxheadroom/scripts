@@ -28,19 +28,41 @@ REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-ser
 # --- 1. System Checks ---
 
 check_root() {
+    # 1. Ensure we are running as root
     if [[ $EUID -ne 0 ]]; then
         log_error "This script must be run as root. Please use 'sudo ./harden_linux.sh'"
         exit 1
     fi
     
-    # Get the real user who invoked sudo
-    SUDO_USER_NAME="${SUDO_USER:-$(who am i | awk '{print $1}')}"
+    # 2. Try to find the original user via SUDO_USER
+    if [[ -n "$SUDO_USER" ]]; then
+        SUDO_USER_NAME="$SUDO_USER"
+    else
+        # 3. Fallback: Try logname command
+        SUDO_USER_NAME=$(logname 2>/dev/null)
+    fi
+
+    # 4. Final Fallback: If both failed (empty or result is root), ASK the user
     if [[ -z "$SUDO_USER_NAME" || "$SUDO_USER_NAME" == "root" ]]; then
-        log_error "Run this with 'sudo' from a regular user account, not directly as root."
-        exit 1
+        log_warn "Could not automatically detect the regular user account."
+        log_warn "This is needed to setup the home directory permissions."
+        
+        while true; do
+            read -p "Please enter the username of the REGULAR user to harden: " SUDO_USER_NAME
+            
+            # Check if this user actually exists in /etc/passwd
+            if getent passwd "$SUDO_USER_NAME" > /dev/null; then
+                break
+            else
+                log_error "User '$SUDO_USER_NAME' does not exist on this system. Try again."
+            fi
+        done
     fi
     
+    # 5. Get home directory   
     USER_HOME_DIR=$(getent passwd "$SUDO_USER_NAME" | cut -d: -f6)
+
+    log_info "Running hardening for user: $SUDO_USER_NAME (Home: $USER_HOME_DIR)"
 }
 
 ensure_dependencies() {
