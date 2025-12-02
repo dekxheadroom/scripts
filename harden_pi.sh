@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # vibed by Gemini Pro 3.0
-# Hardening Script v2.2 (Raspberry Pi Flex Edition)
+# Hardening Script v2.4 (Raspberry Pi Flex Edition + Fixes)
 # Optimized for Debian/Ubuntu/Raspberry Pi OS
 set -eo pipefail
 
@@ -23,6 +23,7 @@ log_error() { echo -e "${RED}[ERROR] $1${NC}"; }
 # --- Global Variables ---
 SSH_PORT=""
 SSH_KEY_PATH=""
+SKIP_KEY_IMPORT="false"
 SUDO_USER_NAME=""
 USER_HOME_DIR=""
 
@@ -34,6 +35,7 @@ check_hardware() {
     # Check if running on a Raspberry Pi via Device Tree
     if grep -q "Raspberry Pi" /sys/firmware/devicetree/base/model 2>/dev/null; then
         MODEL=$(tr -d '\0' < /sys/firmware/devicetree/base/model)
+        # Get RAM in GB
         RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
         RAM_GB=$((RAM_KB / 1024 / 1024))
         
@@ -65,11 +67,12 @@ check_root() {
     
     SUDO_USER_NAME="${SUDO_USER:-$(who am i | awk '{print $1}')}"
     if [[ -z "$SUDO_USER_NAME" || "$SUDO_USER_NAME" == "root" ]]; then
-        log_error "Run this with 'sudo' from a regular user account (e.g., 'pi' or 'admin'), not directly as root."
-        exit 1
+        log_warn "Could not determine sudo user. Assuming current user is the target."
+        read -p "Enter the username to harden (e.g. pi): " SUDO_USER_NAME
     fi
     
     USER_HOME_DIR=$(getent passwd "$SUDO_USER_NAME" | cut -d: -f6)
+    log_info "Target User: $SUDO_USER_NAME (Home: $USER_HOME_DIR)"
 }
 
 ensure_dependencies() {
@@ -85,7 +88,6 @@ ensure_dependencies() {
             log_success "Package '$pkg' is already installed."
         fi
     done
-    log_success "All dependencies are in place."
 }
 
 # --- 2. User Inputs ---
@@ -93,6 +95,7 @@ ensure_dependencies() {
 get_user_inputs() {
     log_info "--- Phase 2: User Configuration ---"
     
+    # Get SSH Port
     while true; do
         read -p "Enter a custom SSH port (1025-65535): " SSH_PORT
         if [[ "$SSH_PORT" -gt 1024 && "$SSH_PORT" -lt 65535 ]]; then
@@ -102,16 +105,26 @@ get_user_inputs() {
         fi
     done
     
-    while true; do
-        read -p "Enter path to your public SSH key (e.g., /home/$SUDO_USER_NAME/.ssh/id_ed25519.pub): " INPUT_PATH
-        SSH_KEY_PATH="${INPUT_PATH/#\~/$USER_HOME_DIR}" # Fix tilde expansion
+    # OPTIONAL SSH Key Import (Fixed logic)
+    echo ""
+    log_warn "If you have already manually set up your authorized_keys, you can skip this step."
+    read -p "Do you want to import a public key file now? (y/n): " IMPORT_CHOICE
+    
+    if [[ "$IMPORT_CHOICE" =~ ^[Yy]$ ]]; then
+        while true; do
+            read -p "Enter path to public SSH key (e.g., /home/$SUDO_USER_NAME/id.pub): " INPUT_PATH
+            SSH_KEY_PATH="${INPUT_PATH/#\~/$USER_HOME_DIR}"
 
-        if [[ -f "$SSH_KEY_PATH" ]]; then
-            break
-        else
-            log_error "File not found at: $SSH_KEY_PATH"
-        fi
-    done
+            if [[ -f "$SSH_KEY_PATH" ]]; then
+                break
+            else
+                log_error "File not found at: $SSH_KEY_PATH"
+            fi
+        done
+    else
+        SKIP_KEY_IMPORT="true"
+        log_info "Skipping SSH key import (preserving existing authorized_keys)."
+    fi
 }
 
 # --- 3. Hardening Functions ---
@@ -129,7 +142,9 @@ setup_firewall() {
     ufw deny 22/tcp
     ufw allow "$SSH_PORT/tcp"
     
-    yes | ufw enable
+    # FIX: Use --force instead of piping 'yes' to avoid crash
+    ufw --force enable
+    
     log_success "Firewall active. Port $SSH_PORT allowed."
 }
 
@@ -151,15 +166,24 @@ secure_ssh() {
     set_ssh_param "PermitRootLogin" "no"
     set_ssh_param "PasswordAuthentication" "no"
     set_ssh_param "KbdInteractiveAuthentication" "no"
+    set_ssh_param "PubkeyAuthentication" "yes"
     
     local ssh_dir="$USER_HOME_DIR/.ssh"
     local auth_key_file="$ssh_dir/authorized_keys"
     
     mkdir -p "$ssh_dir"
     chmod 700 "$ssh_dir"
-    # Using single > to overwrite/ensure clean state as requested
-    cat "$SSH_KEY_PATH" > "$auth_key_file"
-    chmod 600 "$auth_key_file"
+    
+    # Only import if user requested
+    if [[ "$SKIP_KEY_IMPORT" == "false" ]]; then
+        cat "$SSH_KEY_PATH" >> "$auth_key_file"
+        log_success "Key imported."
+    fi
+    
+    # Ensure permissions are correct
+    if [[ -f "$auth_key_file" ]]; then
+        chmod 600 "$auth_key_file"
+    fi
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$ssh_dir"
     
     systemctl restart ssh
@@ -227,17 +251,21 @@ setup_rkhunter() {
     local conf="/etc/rkhunter.conf"
     local default="/etc/default/rkhunter"
     
-    sed -i "s|^WEB_CMD=.*|WEB_CMD=\"/usr/bin/wget\"|" "$conf"
+    # FIX: Comment out disable flag
+    sed -i 's/^DISABLE_WEB_CMD=.*/#&/' "$conf"
+    # FIX: Remove quotes for wget command
+    sed -i "s|^WEB_CMD=.*|WEB_CMD=/usr/bin/wget|" "$conf"
+
     sed -i "s/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/" "$conf"
     sed -i "s/^MIRRORS_MODE=.*/MIRRORS_MODE=0/" "$conf"
+    
     sed -i 's/^CRON_DAILY_RUN=.*/CRON_DAILY_RUN="true"/' "$default"
     sed -i 's/^APT_AUTOGEN=.*/APT_AUTOGEN="true"/' "$default"
 
-    # Run update but suppress output to keep terminal clean
-    log_info "Updating rkhunter definitions (this may take a minute)..."
-    rkhunter --update > /dev/null
-    rkhunter --propupd > /dev/null
-    log_success "rkhunter baseline created."
+    log_info "Updating rkhunter signatures..."
+    rkhunter --update > /dev/null || log_warn "rkhunter update failed (check network)"
+    rkhunter --propupd > /dev/null || log_warn "rkhunter propupd failed"
+    log_success "rkhunter configured."
 }
 
 setup_fail2ban() {
