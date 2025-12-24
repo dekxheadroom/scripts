@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # vibed by Gemini Pro 3.0
-# Hardening Script v2.4 (Raspberry Pi Flex Edition + Fixes)
-# Optimized for Debian/Ubuntu/Raspberry Pi OS
+# Hardening Script v3.0 (Raspberry Pi 500+ Edition)
+# Optimized for Raspberry Pi OS (Bookworm/Wayland)
 set -eo pipefail
 
 # --- Color Definitions ---
@@ -27,7 +27,8 @@ SKIP_KEY_IMPORT="false"
 SUDO_USER_NAME=""
 USER_HOME_DIR=""
 
-REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server)
+# Added swayidle and swaylock for the lockscreen requirement
+REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server swayidle swaylock)
 
 # --- 0. The Flex Module ---
 
@@ -40,12 +41,19 @@ check_hardware() {
         RAM_GB=$((RAM_KB / 1024 / 1024))
         
         clear
-        echo -e "${PURPLE}${BOLD}"
-        echo "   _  __     __                    __   "
-        echo "  | |/ /__  / /____ _______  ___  / /   "
-        echo "  |   / _ \/ __/ _ \_  / _ \/ _ \/ /    "
-        echo " /   /  __/ /_/  __/ //  __/  __/ /___  "
-        echo "/_/|_\___/\__/\___//__\___/\___/_____/  "
+        echo -e "${BOLD}"
+        # Leaves in Green
+        echo -e "${GREEN}   .~~.   .~~.  ${NC}"
+        echo -e "${GREEN}  '. \ ' ' / .' ${NC}"
+        # Berry in Red
+        echo -e "${RED}   .~ .~~~..~.  ${NC}"
+        echo -e "${RED}  : .~.'~'.~. : ${NC}"
+        echo -e "${RED} ~ (   ) (   ) ~${NC}"
+        echo -e "${RED}( : '~'.~.'~' : )${NC}"
+        echo -e "${RED} ~ .~ (   ) ~. ~${NC}"
+        echo -e "${RED}  (  : '~' :  ) ${NC}"
+        echo -e "${RED}   '~ .~~~. ~'  ${NC}"
+        echo -e "${RED}       '~'      ${NC}"
         echo -e "${NC}"
         echo -e "${CYAN}>>> HARDWARE DETECTED: ${MODEL}${NC}"
         echo -e "${CYAN}>>> MEMORY CAPACITY:   ${RAM_GB}GB (Absolute Unit)${NC}"
@@ -105,7 +113,7 @@ get_user_inputs() {
         fi
     done
     
-    # OPTIONAL SSH Key Import (Fixed logic)
+    # OPTIONAL SSH Key Import
     echo ""
     log_warn "If you have already manually set up your authorized_keys, you can skip this step."
     read -p "Do you want to import a public key file now? (y/n): " IMPORT_CHOICE
@@ -141,10 +149,7 @@ setup_firewall() {
     
     ufw deny 22/tcp
     ufw allow "$SSH_PORT/tcp"
-    
-    # FIX: Use --force instead of piping 'yes' to avoid crash
     ufw --force enable
-    
     log_success "Firewall active. Port $SSH_PORT allowed."
 }
 
@@ -174,13 +179,11 @@ secure_ssh() {
     mkdir -p "$ssh_dir"
     chmod 700 "$ssh_dir"
     
-    # Only import if user requested
     if [[ "$SKIP_KEY_IMPORT" == "false" ]]; then
         cat "$SSH_KEY_PATH" >> "$auth_key_file"
         log_success "Key imported."
     fi
     
-    # Ensure permissions are correct
     if [[ -f "$auth_key_file" ]]; then
         chmod 600 "$auth_key_file"
     fi
@@ -190,8 +193,65 @@ secure_ssh() {
     log_success "SSH hardened."
 }
 
+configure_sudo_password() {
+    log_info "Enforcing password for sudo..."
+    local sudoers_file="/etc/sudoers.d/010_pi-nopasswd"
+    
+    if [[ -f "$sudoers_file" ]]; then
+        # This removes the 'NOPASSWD:' tag, reverting the user to standard password authentication
+        sed -i 's/NOPASSWD: //g' "$sudoers_file"
+        log_success "Sudo password enforcement enabled (Modified 010_pi-nopasswd)."
+    else
+        log_warn "$sudoers_file not found. Please verify sudoers configuration manually."
+    fi
+}
+
+configure_lockscreen_wayland() {
+    log_info "Configuring Wayland (LabWC) Lockscreen & Auto-Logout..."
+    
+    # 1. Disable Auto-Login via raspi-config
+    # 'B3' sets boot behavior to Desktop but requires login
+    if command -v raspi-config >/dev/null; then
+        raspi-config nonint do_boot_behaviour B3
+        log_success "Auto-login disabled. Password required on reboot."
+    else
+        log_warn "raspi-config not found. Please manually disable auto-login."
+    fi
+
+    # 2. Configure Idle Lock for Wayland (LabWC)
+    # LabWC uses 'autostart' to launch background tasks like swayidle
+    local labwc_config_dir="$USER_HOME_DIR/.config/labwc"
+    local autostart_file="$labwc_config_dir/autostart"
+    
+    mkdir -p "$labwc_config_dir"
+    chown "$SUDO_USER_NAME:$SUDO_USER_NAME" "$labwc_config_dir"
+    
+    if [[ ! -f "$autostart_file" ]]; then
+        touch "$autostart_file"
+        chown "$SUDO_USER_NAME:$SUDO_USER_NAME" "$autostart_file"
+    fi
+    
+    # Add swayidle configuration if not present
+    if ! grep -q "swayidle" "$autostart_file"; then
+        echo -e "\n# Security: Lock screen after 300s (5min) inactivity" >> "$autostart_file"
+        # 300s = Lock screen
+        # 600s = Turn off monitor (power save)
+        # resume = Turn on monitor
+        # before-sleep = Lock screen before suspend
+        echo "swayidle -w \\" >> "$autostart_file"
+        echo "   timeout 300 'swaylock -f -c 000000' \\" >> "$autostart_file"
+        echo "   timeout 600 'wlopm --off \*' \\" >> "$autostart_file"
+        echo "   resume 'wlopm --on \*' \\" >> "$autostart_file"
+        echo "   before-sleep 'swaylock -f -c 000000' &" >> "$autostart_file"
+        
+        log_success "Wayland lockscreen configured (5min lock, 10min display off)."
+    else
+        log_warn "swayidle already present in autostart. Skipping to avoid duplicates."
+    fi
+}
+
 setup_clamav() {
-    log_info "Configuring ClamAV (16GB RAM detected? Running Full Suite)..."
+    log_info "Configuring ClamAV..."
     systemctl enable --now clamav-freshclam.service
     
     local user_service_dir="$USER_HOME_DIR/.config/systemd/user"
@@ -251,14 +311,10 @@ setup_rkhunter() {
     local conf="/etc/rkhunter.conf"
     local default="/etc/default/rkhunter"
     
-    # FIX: Comment out disable flag
     sed -i 's/^DISABLE_WEB_CMD=.*/#&/' "$conf"
-    # FIX: Remove quotes for wget command
     sed -i "s|^WEB_CMD=.*|WEB_CMD=/usr/bin/wget|" "$conf"
-
     sed -i "s/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/" "$conf"
     sed -i "s/^MIRRORS_MODE=.*/MIRRORS_MODE=0/" "$conf"
-    
     sed -i 's/^CRON_DAILY_RUN=.*/CRON_DAILY_RUN="true"/' "$default"
     sed -i 's/^APT_AUTOGEN=.*/APT_AUTOGEN="true"/' "$default"
 
@@ -317,6 +373,8 @@ main() {
     setup_linger
     setup_firewall
     secure_ssh
+    configure_sudo_password
+    configure_lockscreen_wayland
     setup_clamav
     setup_chkrootkit
     setup_rkhunter
