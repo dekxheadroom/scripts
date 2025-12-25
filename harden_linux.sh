@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
-# vibed by Gemini Pro 3.0
-# Hardening Script v2.3 (Final Patched Version)
-# Fixes: UFW pipe crash, Rkhunter config errors, Optional SSH Key import
+# vibed by Gemini 3 Pro
+# Hardening Script v3.0
+# Changelog:
+# v3.0: Added VM Isolation Module (Blocks VM-to-Host traffic while allowing Host-to-VM)
+# v2.3: Fixed UFW pipe crash, Rkhunter config, Optional SSH Key import
 set -eo pipefail
 
 # --- Color Definitions ---
@@ -22,6 +24,8 @@ log_error() { echo -e "${RED}[ERROR] $1${NC}"; }
 SSH_PORT=""
 SSH_KEY_PATH=""
 SKIP_KEY_IMPORT="false"
+ISOLATE_VM="false"
+VM_SUBNET=""
 SUDO_USER_NAME=""
 USER_HOME_DIR=""
 
@@ -97,6 +101,27 @@ get_user_inputs() {
         SKIP_KEY_IMPORT="true"
         log_info "Skipping SSH key import (preserving existing authorized_keys)."
     fi
+
+    # VM ISOLATION (New in v3.0)
+    echo ""
+    log_warn "Virtual Machine Isolation Check: Do you need to isolate Guest VMs (VMware/VirtualBox) from this Host?"
+    read -p "Configure VM Isolation Rule? (y/n): " ISO_CHOICE
+    
+    if [[ "$ISO_CHOICE" =~ ^[Yy]$ ]]; then
+        while true; do
+            read -p "Enter the VM Subnet (CIDR format, e.g., 192.168.146.0/24): " VM_SUBNET
+            # Basic regex to check for valid CIDR format
+            if [[ "$VM_SUBNET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+                ISOLATE_VM="true"
+                break
+            else
+                log_error "Invalid format. Please use CIDR (e.g., 192.168.146.0/24)"
+            fi
+        done
+    else
+        ISOLATE_VM="false"
+        log_info "Skipping VM isolation."
+    fi
 }
 
 # --- 3. Hardening Functions ---
@@ -108,16 +133,32 @@ setup_linger() {
 
 setup_firewall() {
     log_info "Configuring UFW..."
+    # Reset to default to clear old rules
+    ufw --force reset > /dev/null
+    
     ufw default deny incoming
     ufw default allow outgoing
     
+    # Basic SSH Rules
     ufw deny 22/tcp
     ufw allow "$SSH_PORT/tcp"
     
+    # VM ISOLATION LOGIC (v3.0)
+    # We use 'insert 1' to ensure this rule is evaluated BEFORE the generic Allow SSH rule.
+    # This guarantees that even if the VM tries to hit the SSH port, it gets blocked first.
+    if [[ "$ISOLATE_VM" == "true" ]]; then
+        log_info "Applying One-Way Mirror isolation for subnet: $VM_SUBNET"
+        ufw insert 1 deny from "$VM_SUBNET" to any
+    fi
+    
+    # Enable Firewall
     # FIX: Use --force instead of piping 'yes' to avoid SIGPIPE crash
     ufw --force enable
     
     log_success "Firewall active. Port $SSH_PORT allowed."
+    if [[ "$ISOLATE_VM" == "true" ]]; then
+        log_success "Isolation active: $VM_SUBNET -> HOST BLOCKED."
+    fi
 }
 
 secure_ssh() {
@@ -277,7 +318,7 @@ EOL
 
 main() {
     clear
-    log_info "=== Linux Host Hardening v2.3 (Patched) ==="
+    log_info "=== Linux Host Hardening v3.0 (Ronin Edition) ==="
     
     check_root
     ensure_dependencies
