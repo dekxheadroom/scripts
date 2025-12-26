@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
 # vibed by Gemini Pro 3.0
-# Hardening Script v3.0 (Raspberry Pi 500+ Edition)
-# Optimized for Raspberry Pi OS (Bookworm/Wayland)
+# Hardening Script v3.1 (Raspberry Pi 500+ Edition)
+# Changelog:
+# v3.1: Integrated Enhanced Hardening (Strict Ciphers, No X11, Timeouts)
+# v3.0: Optimized for Raspberry Pi OS (Bookworm/Wayland)
 set -eo pipefail
 
 # --- Color Definitions ---
@@ -154,25 +156,57 @@ setup_firewall() {
 }
 
 secure_ssh() {
-    log_info "Hardening SSH configuration..."
+    log_info "Hardening SSH configuration (Hunter Class)..."
     local ssh_config="/etc/ssh/sshd_config"
     
+    # Helper to safely set config
     set_ssh_param() {
         local param="$1"
         local value="$2"
         if grep -qE "^\s*#?\s*$param" "$ssh_config"; then
-            sed -i "s/^\s*#\?\s*$param.*/$param $value/" "$ssh_config"
+            sed -i "s|^\s*#\?\s*$param.*|$param $value|" "$ssh_config"
         else
             echo "$param $value" >> "$ssh_config"
         fi
     }
 
+    # 1. Basics & Port
     set_ssh_param "Port" "$SSH_PORT"
+    set_ssh_param "Protocol" "2"
+
+    # 2. Authentication Lockdown
     set_ssh_param "PermitRootLogin" "no"
     set_ssh_param "PasswordAuthentication" "no"
+    set_ssh_param "PermitEmptyPasswords" "no"
     set_ssh_param "KbdInteractiveAuthentication" "no"
+    set_ssh_param "KerberosAuthentication" "no"
+    set_ssh_param "GSSAPIAuthentication" "no"
     set_ssh_param "PubkeyAuthentication" "yes"
+
+    # 3. Surface Area Reduction
+    set_ssh_param "X11Forwarding" "no"
+    set_ssh_param "AllowAgentForwarding" "no"
+    set_ssh_param "AllowTcpForwarding" "no"
+    set_ssh_param "PrintLastLog" "yes"
+
+    # 4. Anti-Brute Force / Timeouts
+    set_ssh_param "ClientAliveInterval" "300"
+    set_ssh_param "ClientAliveCountMax" "0"
+    set_ssh_param "MaxAuthTries" "3"
+    set_ssh_param "MaxSessions" "2"
+    set_ssh_param "LoginGraceTime" "30"
+
+    # 5. Crypto-Shield (Explicit Ciphers)
+    # Removing old entries first to ensure no conflicts
+    sed -i '/^Ciphers/d' "$ssh_config"
+    sed -i '/^KexAlgorithms/d' "$ssh_config"
+    sed -i '/^MACs/d' "$ssh_config"
+
+    echo "KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256" >> "$ssh_config"
+    echo "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr" >> "$ssh_config"
+    echo "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com" >> "$ssh_config"
     
+    # Authorized Keys Setup
     local ssh_dir="$USER_HOME_DIR/.ssh"
     local auth_key_file="$ssh_dir/authorized_keys"
     
@@ -189,8 +223,14 @@ secure_ssh() {
     fi
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$ssh_dir"
     
-    systemctl restart ssh
-    log_success "SSH hardened."
+    # Syntax Check
+    if sshd -t; then
+        systemctl restart ssh
+        log_success "SSH hardened and restarted."
+    else
+        log_error "SSH Config syntax error! Reverting changes might be necessary."
+        exit 1
+    fi
 }
 
 configure_sudo_password() {
@@ -198,7 +238,6 @@ configure_sudo_password() {
     local sudoers_file="/etc/sudoers.d/010_pi-nopasswd"
     
     if [[ -f "$sudoers_file" ]]; then
-        # This removes the 'NOPASSWD:' tag, reverting the user to standard password authentication
         sed -i 's/NOPASSWD: //g' "$sudoers_file"
         log_success "Sudo password enforcement enabled (Modified 010_pi-nopasswd)."
     else
@@ -210,7 +249,6 @@ configure_lockscreen_wayland() {
     log_info "Configuring Wayland (LabWC) Lockscreen & Auto-Logout..."
     
     # 1. Disable Auto-Login via raspi-config
-    # 'B3' sets boot behavior to Desktop but requires login
     if command -v raspi-config >/dev/null; then
         raspi-config nonint do_boot_behaviour B3
         log_success "Auto-login disabled. Password required on reboot."
@@ -219,7 +257,6 @@ configure_lockscreen_wayland() {
     fi
 
     # 2. Configure Idle Lock for Wayland (LabWC)
-    # LabWC uses 'autostart' to launch background tasks like swayidle
     local labwc_config_dir="$USER_HOME_DIR/.config/labwc"
     local autostart_file="$labwc_config_dir/autostart"
     
@@ -234,10 +271,6 @@ configure_lockscreen_wayland() {
     # Add swayidle configuration if not present
     if ! grep -q "swayidle" "$autostart_file"; then
         echo -e "\n# Security: Lock screen after 300s (5min) inactivity" >> "$autostart_file"
-        # 300s = Lock screen
-        # 600s = Turn off monitor (power save)
-        # resume = Turn on monitor
-        # before-sleep = Lock screen before suspend
         echo "swayidle -w \\" >> "$autostart_file"
         echo "   timeout 300 'swaylock -f -c 000000' \\" >> "$autostart_file"
         echo "   timeout 600 'wlopm --off \*' \\" >> "$autostart_file"
@@ -276,7 +309,6 @@ WantedBy=timers.target
 EOL
 
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$user_service_dir"
-
     sudo -u "$SUDO_USER_NAME" systemctl --user daemon-reload
     sudo -u "$SUDO_USER_NAME" systemctl --user enable --now clamscan-home.timer
     log_success "ClamAV user timer enabled."
