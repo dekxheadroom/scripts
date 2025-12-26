@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
 # vibed by Gemini 3 Pro
-# Hardening Script v3.0
+# Hardening Script v3.1
 # Changelog:
-# v3.0: Added VM Isolation Module (Blocks VM-to-Host traffic while allowing Host-to-VM)
-# v2.3: Fixed UFW pipe crash, Rkhunter config, Optional SSH Key import
+# v3.1: Added Enhanced SSH hardening (Strict Ciphers, X11 Block, Banners, Timeouts)
+# v3.0: Added VM Isolation Module
+# v2.3: Fixed UFW pipe crash, Rkhunter config
 set -eo pipefail
 
 # --- Color Definitions ---
@@ -39,7 +40,6 @@ check_root() {
         exit 1
     fi
     
-    # Get the real user who invoked sudo
     SUDO_USER_NAME="${SUDO_USER:-$(who am i | awk '{print $1}')}"
     if [[ -z "$SUDO_USER_NAME" || "$SUDO_USER_NAME" == "root" ]]; then
         log_warn "Could not determine sudo user. Assuming current user is the target."
@@ -52,7 +52,6 @@ check_root() {
 
 ensure_dependencies() {
     log_info "--- Phase 1: Dependency Verification ---"
-    log_info "Updating package lists..."
     apt-get update -y > /dev/null
 
     for pkg in "${REQUIRED_PKGS[@]}"; do
@@ -80,15 +79,14 @@ get_user_inputs() {
         fi
     done
     
-    # OPTIONAL SSH Key Import
+    # SSH Key Import
     echo ""
-    log_warn "If you have already manually set up your authorized_keys (e.g. via curl), you can skip this step."
+    log_warn "If you have already manually set up your authorized_keys, you can skip this step."
     read -p "Do you want to import a public key file now? (y/n): " IMPORT_CHOICE
     
     if [[ "$IMPORT_CHOICE" =~ ^[Yy]$ ]]; then
         while true; do
             read -p "Enter path to public SSH key (e.g., /home/$SUDO_USER_NAME/id.pub): " INPUT_PATH
-            # Manually expand tilde if present
             SSH_KEY_PATH="${INPUT_PATH/#\~/$USER_HOME_DIR}"
 
             if [[ -f "$SSH_KEY_PATH" ]]; then
@@ -99,18 +97,17 @@ get_user_inputs() {
         done
     else
         SKIP_KEY_IMPORT="true"
-        log_info "Skipping SSH key import (preserving existing authorized_keys)."
+        log_info "Skipping SSH key import."
     fi
 
-    # VM ISOLATION (New in v3.0)
+    # VM ISOLATION
     echo ""
-    log_warn "Virtual Machine Isolation Check: Do you need to isolate Guest VMs (VMware/VirtualBox) from this Host?"
+    log_warn "Virtual Machine Isolation Check: Do you need to isolate Guest VMs from this Host?"
     read -p "Configure VM Isolation Rule? (y/n): " ISO_CHOICE
     
     if [[ "$ISO_CHOICE" =~ ^[Yy]$ ]]; then
         while true; do
             read -p "Enter the VM Subnet (CIDR format, e.g., 192.168.146.0/24): " VM_SUBNET
-            # Basic regex to check for valid CIDR format
             if [[ "$VM_SUBNET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
                 ISOLATE_VM="true"
                 break
@@ -133,9 +130,7 @@ setup_linger() {
 
 setup_firewall() {
     log_info "Configuring UFW..."
-    # Reset to default to clear old rules
     ufw --force reset > /dev/null
-    
     ufw default deny incoming
     ufw default allow outgoing
     
@@ -143,67 +138,95 @@ setup_firewall() {
     ufw deny 22/tcp
     ufw allow "$SSH_PORT/tcp"
     
-    # VM ISOLATION LOGIC (v3.0)
-    # We use 'insert 1' to ensure this rule is evaluated BEFORE the generic Allow SSH rule.
-    # This guarantees that even if the VM tries to hit the SSH port, it gets blocked first.
+    # VM Isolation (One-Way Mirror)
     if [[ "$ISOLATE_VM" == "true" ]]; then
         log_info "Applying One-Way Mirror isolation for subnet: $VM_SUBNET"
         ufw insert 1 deny from "$VM_SUBNET" to any
     fi
     
-    # Enable Firewall
-    # FIX: Use --force instead of piping 'yes' to avoid SIGPIPE crash
     ufw --force enable
-    
     log_success "Firewall active. Port $SSH_PORT allowed."
-    if [[ "$ISOLATE_VM" == "true" ]]; then
-        log_success "Isolation active: $VM_SUBNET -> HOST BLOCKED."
-    fi
 }
 
 secure_ssh() {
-    log_info "Hardening SSH configuration..."
+    log_info "Hardening SSH configuration ..."
     local ssh_config="/etc/ssh/sshd_config"
+    
+    setup_banner
     
     # Helper to safely set config
     set_ssh_param() {
         local param="$1"
         local value="$2"
         if grep -qE "^\s*#?\s*$param" "$ssh_config"; then
-            sed -i "s/^\s*#\?\s*$param.*/$param $value/" "$ssh_config"
+            sed -i "s|^\s*#\?\s*$param.*|$param $value|" "$ssh_config"
         else
             echo "$param $value" >> "$ssh_config"
         fi
     }
 
+    # 1. Basics & Port
     set_ssh_param "Port" "$SSH_PORT"
+    set_ssh_param "Protocol" "2"
+
+    # 2. Authentication Lockdown
     set_ssh_param "PermitRootLogin" "no"
     set_ssh_param "PasswordAuthentication" "no"
-    set_ssh_param "KbdInteractiveAuthentication" "no"
+    set_ssh_param "PermitEmptyPasswords" "no"
+    set_ssh_param "ChallengeResponseAuthentication" "no"
+    set_ssh_param "KerberosAuthentication" "no"
+    set_ssh_param "GSSAPIAuthentication" "no"
     set_ssh_param "PubkeyAuthentication" "yes"
-    
-    # Setup Authorized Keys Directory permissions
+
+    # 3. Surface Area Reduction
+    set_ssh_param "X11Forwarding" "no"
+    set_ssh_param "AllowAgentForwarding" "no"
+    set_ssh_param "AllowTcpForwarding" "no"
+    set_ssh_param "PrintLastLog" "yes"
+
+    # 4. Anti-Brute Force / Timeouts
+    set_ssh_param "ClientAliveInterval" "300"
+    set_ssh_param "ClientAliveCountMax" "0"
+    set_ssh_param "MaxAuthTries" "3"
+    set_ssh_param "MaxSessions" "2"
+    set_ssh_param "LoginGraceTime" "30"
+
+    # 5. Crypto-Shield (Explicit Ciphers)
+    # Removing old entries first to ensure no conflicts
+    sed -i '/^Ciphers/d' "$ssh_config"
+    sed -i '/^KexAlgorithms/d' "$ssh_config"
+    sed -i '/^MACs/d' "$ssh_config"
+
+    echo "KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256" >> "$ssh_config"
+    echo "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr" >> "$ssh_config"
+    echo "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com" >> "$ssh_config"
+
+    # Authorized Keys Setup
     local ssh_dir="$USER_HOME_DIR/.ssh"
     local auth_key_file="$ssh_dir/authorized_keys"
     
     mkdir -p "$ssh_dir"
     chmod 700 "$ssh_dir"
     
-    # Only import if user requested
     if [[ "$SKIP_KEY_IMPORT" == "false" ]]; then
         cat "$SSH_KEY_PATH" >> "$auth_key_file"
         log_success "Key imported."
     fi
     
-    # Always ensure permissions are correct (even if we didn't import)
     if [[ -f "$auth_key_file" ]]; then
         chmod 600 "$auth_key_file"
     fi
     
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$ssh_dir"
     
-    systemctl restart ssh
-    log_success "SSH hardened."
+    # Syntax Check
+    if sshd -t; then
+        systemctl restart ssh
+        log_success "SSH hardened and restarted."
+    else
+        log_error "SSH Config syntax error! Reverting changes might be necessary."
+        exit 1
+    fi
 }
 
 setup_clamav() {
@@ -232,7 +255,6 @@ WantedBy=timers.target
 EOL
 
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$user_service_dir"
-
     sudo -u "$SUDO_USER_NAME" systemctl --user daemon-reload
     sudo -u "$SUDO_USER_NAME" systemctl --user enable --now clamscan-home.timer
     log_success "ClamAV user timer enabled."
@@ -267,20 +289,14 @@ setup_rkhunter() {
     local conf="/etc/rkhunter.conf"
     local default="/etc/default/rkhunter"
     
-    # FIX: Comment out the disable flag so it can go online
     sed -i 's/^DISABLE_WEB_CMD=.*/#&/' "$conf"
-
-    # FIX: Set the web command WITHOUT quotes
     sed -i "s|^WEB_CMD=.*|WEB_CMD=/usr/bin/wget|" "$conf"
-
     sed -i "s/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/" "$conf"
     sed -i "s/^MIRRORS_MODE=.*/MIRRORS_MODE=0/" "$conf"
-    
     sed -i 's/^CRON_DAILY_RUN=.*/CRON_DAILY_RUN="true"/' "$default"
     sed -i 's/^APT_AUTOGEN=.*/APT_AUTOGEN="true"/' "$default"
 
     log_info "Updating rkhunter signatures..."
-    # Allow failure on update in case of network temp issues
     rkhunter --update > /dev/null || log_warn "rkhunter update failed (check network later)"
     rkhunter --propupd > /dev/null || log_warn "rkhunter propupd failed"
     log_success "rkhunter configured."
@@ -318,7 +334,7 @@ EOL
 
 main() {
     clear
-    log_info "=== Linux Host Hardening v3.0 (Ronin Edition) ==="
+    log_info "=== Linux Host Hardening v3.1 ==="
     
     check_root
     ensure_dependencies
