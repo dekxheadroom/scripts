@@ -173,7 +173,7 @@ secure_ssh() {
     set_ssh_param "PermitRootLogin" "no"
     set_ssh_param "PasswordAuthentication" "no"
     set_ssh_param "PermitEmptyPasswords" "no"
-    set_ssh_param "ChallengeResponseAuthentication" "no"
+    set_ssh_param "KbdInteractiveAuthentication" "no"
     set_ssh_param "KerberosAuthentication" "no"
     set_ssh_param "GSSAPIAuthentication" "no"
     set_ssh_param "PubkeyAuthentication" "yes"
