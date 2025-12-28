@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # vibed by Gemini 3 Pro
-# Hardening Script v3.1
+# Hardening Script v3.2
 # Changelog:
+# v3.2: Added ClamAV Desktop Notifications (libnotify/mako) & Dependencies
 # v3.1: Added Enhanced SSH hardening (Strict Ciphers, X11 Block, Banners, Timeouts)
 # v3.0: Added VM Isolation Module
-# v2.3: Fixed UFW pipe crash, Rkhunter config
 set -eo pipefail
 
 # --- Color Definitions ---
@@ -30,7 +30,8 @@ VM_SUBNET=""
 SUDO_USER_NAME=""
 USER_HOME_DIR=""
 
-REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server)
+# Added libnotify-bin (notify-send) and mako-notifier (for Wayland/Sway) for alerts
+REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server libnotify-bin mako-notifier)
 
 # --- 1. System Checks ---
 
@@ -149,7 +150,7 @@ setup_firewall() {
 }
 
 secure_ssh() {
-    log_info "Hardening SSH configuration ..."
+    log_info "Hardening SSH configuration (Hunter Class)..."
     local ssh_config="/etc/ssh/sshd_config"
     
     setup_banner
@@ -168,6 +169,7 @@ secure_ssh() {
     # 1. Basics & Port
     set_ssh_param "Port" "$SSH_PORT"
     set_ssh_param "Protocol" "2"
+    set_ssh_param "Banner" "/etc/issue.net"
 
     # 2. Authentication Lockdown
     set_ssh_param "PermitRootLogin" "no"
@@ -229,19 +231,29 @@ secure_ssh() {
     fi
 }
 
+setup_banner() {
+    log_info "Setting up Legal Banner..."
+    echo "AUTHORIZED ACCESS ONLY. ALL ACTIVITIES MONITORED." > /etc/issue.net
+}
+
 setup_clamav() {
-    log_info "Configuring ClamAV..."
+    log_info "Configuring ClamAV with Alerts..."
     systemctl enable --now clamav-freshclam.service
     
     local user_service_dir="$USER_HOME_DIR/.config/systemd/user"
     mkdir -p "$user_service_dir"
     
+    # Updated Service with Notify-Send logic
     tee "$user_service_dir/clamscan-home.service" > /dev/null << EOL
 [Unit]
 Description=Run ClamAV scan on home directory
+
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/clamscan -r --infected %h
+ExecStart=/bin/bash -c '/usr/bin/clamscan -r --infected %h || if [ $? -eq 1 ]; then notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high; fi'
+
+[Install]
+WantedBy=default.target
 EOL
 
     tee "$user_service_dir/clamscan-home.timer" > /dev/null << EOL
@@ -257,7 +269,7 @@ EOL
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$user_service_dir"
     sudo -u "$SUDO_USER_NAME" systemctl --user daemon-reload
     sudo -u "$SUDO_USER_NAME" systemctl --user enable --now clamscan-home.timer
-    log_success "ClamAV user timer enabled."
+    log_success "ClamAV user timer enabled with Desktop Notifications."
 }
 
 setup_chkrootkit() {
@@ -334,7 +346,7 @@ EOL
 
 main() {
     clear
-    log_info "=== Linux Host Hardening v3.1 ==="
+    log_info "=== Linux Host Hardening v3.2 ==="
     
     check_root
     ensure_dependencies
