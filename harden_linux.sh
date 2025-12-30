@@ -3,6 +3,7 @@
 # vibed by Gemini 3 Pro
 # Hardening Script v3.2
 # Changelog:
+# v3.4: Optimised setup_clamAV() for clamscan daemon to scan files only
 # v3.3: Modified setup_clamAV() to run `clamdscan` instead of `clamscan` 
 # v3.2: Added ClamAV Desktop Notifications (libnotify/mako) & Dependencies
 # v3.1: Added Enhanced SSH hardening (Strict Ciphers, X11 Block, Banners, Timeouts)
@@ -250,17 +251,18 @@ setup_clamav() {
     local user_service_dir="$USER_HOME_DIR/.config/systemd/user"
     mkdir -p "$user_service_dir"
     
-    # optimised service
-    # --fdpass: fixes permission errors without weakening folder security
-    # --multiscan: uses multiple CPU cores
+    # optimised to scan only file types 
+    # 1. 'find' gets all regular files (skips sockets/pipes).
+    # 2. 'xargs' feeds them to clamdscan in batches (efficient).
+    # 3. '||' catches exit code 1 (Virus Found) to trigger the alert.
     tee "$user_service_dir/clamscan-home.service" > /dev/null << EOL
 [Unit]
 Description=Run ClamAV daemon scan on home directory
 
 [Service]
-#Logic: run scan. if exit code is 1 (virus found), trigger notification
+#Logic: find files only. run scan. if exit code is 1 (virus found), trigger notification
 Type=oneshot
-ExecStart=/bin/bash -c '/usr/bin/clamdscan --fdpass --multiscan --infected %h || if [ $? -eq 1 ]; then notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high; fi'
+ExecStart=/bin/bash -c 'find %h -type f -print0 | xargs -0 -r /usr/bin/clamdscan --fdpass --multiscan --infected %h || if [ $? -eq 1 ]; then notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high; fi'
 
 [Install]
 WantedBy=default.target
