@@ -3,6 +3,7 @@
 # vibed by Gemini 3 Pro
 # Hardening Script v3.2
 # Changelog:
+# v3.3: Modified setup_clamAV() to run `clamdscan` instead of `clamscan` 
 # v3.2: Added ClamAV Desktop Notifications (libnotify/mako) & Dependencies
 # v3.1: Added Enhanced SSH hardening (Strict Ciphers, X11 Block, Banners, Timeouts)
 # v3.0: Added VM Isolation Module
@@ -237,20 +238,29 @@ setup_banner() {
 }
 
 setup_clamav() {
-    log_info "Configuring ClamAV with Alerts..."
+    log_info "Configuring ClamAV daemon & Alerts..."
+    #Ensure daemon is running for clamdscan
+    systemctl enable --now clamav-daemon.service
     systemctl enable --now clamav-freshclam.service
+
+    #wait for db to load
+    log_info "Waiting 15sec for ClamAV daemon to initialise..."
+    sleep 15
     
     local user_service_dir="$USER_HOME_DIR/.config/systemd/user"
     mkdir -p "$user_service_dir"
     
-    # Updated Service with Notify-Send logic
+    # optimised service
+    # --fdpass: fixes permission errors without weakening folder security
+    # --multiscan: uses multiple CPU cores
     tee "$user_service_dir/clamscan-home.service" > /dev/null << EOL
 [Unit]
-Description=Run ClamAV scan on home directory
+Description=Run ClamAV daemon scan on home directory
 
 [Service]
+#Logic: run scan. if exit code is 1 (virus found), trigger notification
 Type=oneshot
-ExecStart=/bin/bash -c '/usr/bin/clamscan -r --infected %h || if [ $? -eq 1 ]; then notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high; fi'
+ExecStart=/bin/bash -c '/usr/bin/clamdscan --fdpass --multiscan --infected %h || if [ $? -eq 1 ]; then notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high; fi'
 
 [Install]
 WantedBy=default.target
@@ -269,7 +279,7 @@ EOL
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$user_service_dir"
     sudo -u "$SUDO_USER_NAME" systemctl --user daemon-reload
     sudo -u "$SUDO_USER_NAME" systemctl --user enable --now clamscan-home.timer
-    log_success "ClamAV user timer enabled with Desktop Notifications."
+    log_success "ClamAV (daemon mode) user timer enabled with Desktop Notifications."
 }
 
 setup_chkrootkit() {

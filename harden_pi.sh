@@ -3,6 +3,7 @@
 # vibed by Gemini Pro 3.0
 # Hardening Script v3.1 (Raspberry Pi 500+ Edition)
 # Changelog:
+# v3.2: Modified setup_clamAV() to run `clamdscan` instead of `clamscan`, Added Desktop Notifications (libnotify/mako) & Dependencies 
 # v3.1: Integrated Enhanced Hardening (Strict Ciphers, No X11, Timeouts)
 # v3.0: Optimized for Raspberry Pi OS (Bookworm/Wayland)
 set -eo pipefail
@@ -30,7 +31,7 @@ SUDO_USER_NAME=""
 USER_HOME_DIR=""
 
 # Added swayidle and swaylock for the lockscreen requirement
-REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server swayidle swaylock)
+REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server swayidle swaylock libnotify-bin mako-notifier)
 
 # --- 0. The Flex Module ---
 
@@ -284,18 +285,30 @@ configure_lockscreen_wayland() {
 }
 
 setup_clamav() {
-    log_info "Configuring ClamAV..."
+    log_info "Configuring ClamAV Daemon & Alerts..."
+    # Start the Daemon Services
+    systemctl enable --now clamav-daemon.service
     systemctl enable --now clamav-freshclam.service
+
+    # Wait for the database to load into RAM
+    log_info "Waiting 15s for ClamAV Daemon to load virus definitions..."
+    sleep 15
     
     local user_service_dir="$USER_HOME_DIR/.config/systemd/user"
     mkdir -p "$user_service_dir"
     
+    #  The Optimized Service
+    # --fdpass: Passes file permissions to the daemon safely.
+    # --multiscan: Forces multithreaded scanning.
     tee "$user_service_dir/clamscan-home.service" > /dev/null << EOL
 [Unit]
 Description=Run ClamAV scan on home directory
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/clamscan -r --infected %h
+# Logic: Run scan. If exit code is 1 (Virus Found), trigger notification.
+ExecStart=/bin/bash -c '/usr/bin/clamdscan --fdpass --multiscan --infected %h || if [ $? -eq 1 ]; then notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high; fi'
+[Install]
+WantedBy=default.target
 EOL
 
     tee "$user_service_dir/clamscan-home.timer" > /dev/null << EOL
