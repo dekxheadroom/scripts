@@ -3,6 +3,7 @@
 # vibed by Gemini Pro 3.0
 # Hardening Script v3.1 (Raspberry Pi 500+ Edition)
 # Changelog:
+# v3.3.2: removed conditional statement for notify-send. alert will be sent if XARG process any errors. XARG does not pass on clamav's positive detection
 # v3.3.1: corrected bug in setup_clamAV() - removed `%h` after `--infected`
 # v3.3 Optimised setup_clamAV() for clamscan daemon to scan files only
 # v3.2: Modified setup_clamAV() to run `clamdscan` instead of `clamscan`, Added Desktop Notifications (libnotify/mako) & Dependencies 
@@ -309,7 +310,7 @@ Description=Run ClamAV scan on home directory
 [Service]
 Type=oneshot
 #Logic: find files only. run scan. if exit code is 1 (virus found), trigger notification
-ExecStart=/bin/bash -c 'find %h -type f -print0 | xargs -0 -r /usr/bin/clamdscan --fdpass --multiscan --infected || if [ $? -eq 1 ]; then notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high; fi'
+ExecStart=/bin/bash -c 'find %h -type f -print0 | xargs -0 -r /usr/bin/clamdscan --fdpass --multiscan --infected || notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high'
 [Install]
 WantedBy=default.target
 EOL
