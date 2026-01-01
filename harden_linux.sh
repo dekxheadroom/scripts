@@ -264,7 +264,7 @@ Description=Run ClamAV daemon scan on home directory
 [Service]
 #Logic: find files only. run scan. if exit code is 1 (virus found), trigger notification
 Type=oneshot
-ExecStart=/bin/bash -c 'find %h -type f -print0 | xargs -0 -r /usr/bin/clamdscan --fdpass --multiscan --infected || notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high; fi'
+ExecStart=/bin/bash -c 'find %h -type f -print0 | xargs -0 -r /usr/bin/clamdscan --fdpass --multiscan --infected || notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical --icon=security-high'
 
 [Install]
 WantedBy=default.target
