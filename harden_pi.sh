@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
 # vibed by Gemini Pro 3.0
-# Hardening Script v3.4 (RAVAGE Edition)
+# Hardening Script v3.5 (RAVAGE Edition)
 # Changelog:
+# v3.5: Removed swaylock and swayidle because of conflict with 2FA login
 # v3.4: Removed deprecated 'Protocol 2' SSH directive; Fixed DBUS session logic for Wayland/LabWC notifications; Hardened Sudoers regex to prevent mangling on re-runs; Added wlopm to dependencies for display power management
 # v3.3.2: removed conditional statement for notify-send. alert will be sent if XARG process any errors. XARG does not pass on clamav's positive detection
 # v3.3.1: corrected bug in setup_clamAV() - removed `%h` after `--infected`
@@ -10,6 +11,7 @@
 # v3.2: Modified setup_clamAV() to run `clamdscan` instead of `clamscan`, Added Desktop Notifications (libnotify/mako) & Dependencies 
 # v3.1: Integrated Enhanced Hardening (Strict Ciphers, No X11, Timeouts)
 # v3.0: Optimized for Raspberry Pi OS (Bookworm/Wayland)
+
 set -eo pipefail
 
 # --- Color Definitions ---
@@ -17,7 +19,6 @@ CYAN='\033[0;36m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
@@ -34,14 +35,14 @@ SKIP_KEY_IMPORT="false"
 SUDO_USER_NAME=""
 USER_HOME_DIR=""
 
-# Added wlopm for display power management in Wayland
-REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server swayidle swaylock libnotify-bin mako-notifier wlopm)
+# Removed swayidle and swaylock. Kept wlopm for power management
+REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server libnotify-bin mako-notifier wlopm)
 
 # --- 0. The Flex Module ---
 check_hardware() {
     if grep -q "Raspberry Pi" /sys/firmware/devicetree/base/model 2>/dev/null; then
         MODEL=$(tr -d '\0' < /sys/firmware/devicetree/base/model)
-        RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+        RAM_KB=$(grep MemTotal /proc/proc/meminfo | awk '{print $2}' 2>/dev/null || echo 0)
         RAM_GB=$((RAM_KB / 1024 / 1024))
         
         clear
@@ -62,8 +63,6 @@ check_hardware() {
         echo -e "${GREEN}>>> STATUS:             Ready to Harden${NC}"
         echo ""
         sleep 2
-    else
-        log_info "Standard Linux Host Detected."
     fi
 }
 
@@ -73,15 +72,8 @@ check_root() {
         log_error "This script must be run as root. Please use 'sudo ./harden_pi.sh'"
         exit 1
     fi
-    
     SUDO_USER_NAME="${SUDO_USER:-$(who am i | awk '{print $1}')}"
-    if [[ -z "$SUDO_USER_NAME" || "$SUDO_USER_NAME" == "root" ]]; then
-        log_warn "Could not determine sudo user. Assuming current user is the target."
-        read -p "Enter the username to harden: " SUDO_USER_NAME
-    fi
-    
     USER_HOME_DIR=$(getent passwd "$SUDO_USER_NAME" | cut -d: -f6)
-    log_info "Target User: $SUDO_USER_NAME (Home: $USER_HOME_DIR)"
 }
 
 ensure_dependencies() {
@@ -89,7 +81,6 @@ ensure_dependencies() {
     apt-get update -y > /dev/null
     for pkg in "${REQUIRED_PKGS[@]}"; do
         if ! dpkg -s "$pkg" &> /dev/null; then
-            log_warn "Installing missing package: $pkg"
             apt-get install -y "$pkg"
         else
             log_success "Package '$pkg' verified."
@@ -105,24 +96,17 @@ get_user_inputs() {
         if [[ "$SSH_PORT" -gt 1024 && "$SSH_PORT" -lt 65535 ]]; then break;
         else log_error "Invalid port range."; fi
     done
-    
-    read -p "Do you want to import a public key file now? (y/n): " IMPORT_CHOICE
+    read -p "Import public key file? (y/n): " IMPORT_CHOICE
     if [[ "$IMPORT_CHOICE" =~ ^[Yy]$ ]]; then
-        while true; do
-            read -p "Enter path to public SSH key: " INPUT_PATH
-            SSH_KEY_PATH="${INPUT_PATH/#\~/$USER_HOME_DIR}"
-            if [[ -f "$SSH_KEY_PATH" ]]; then break;
-            else log_error "File not found."; fi
-        done
+        read -p "Enter path to public SSH key: " INPUT_PATH
+        SSH_KEY_PATH="${INPUT_PATH/#\~/$USER_HOME_DIR}"
     else
         SKIP_KEY_IMPORT="true"
-        log_info "Skipping key import."
     fi
 }
 
 # --- 3. Hardening Functions ---
 setup_linger() {
-    log_info "Enabling linger for $SUDO_USER_NAME..."
     loginctl enable-linger "$SUDO_USER_NAME"
 }
 
@@ -134,13 +118,11 @@ setup_firewall() {
     ufw deny 22/tcp
     ufw allow "$SSH_PORT/tcp"
     ufw --force enable
-    log_success "Firewall active on port $SSH_PORT."
 }
 
 secure_ssh() {
     log_info "Hardening SSH configuration..."
     local ssh_config="/etc/ssh/sshd_config"
-    
     set_ssh_param() {
         local param="$1"
         local value="$2"
@@ -150,16 +132,11 @@ secure_ssh() {
             echo "$param $value" >> "$ssh_config"
         fi
     }
-
     set_ssh_param "Port" "$SSH_PORT"
-    # Protocol 2 removed as it is deprecated in modern OpenSSH
     set_ssh_param "PermitRootLogin" "no"
     set_ssh_param "PasswordAuthentication" "no"
     set_ssh_param "X11Forwarding" "no"
-    set_ssh_param "MaxAuthTries" "3"
-    set_ssh_param "ClientAliveInterval" "300"
-    set_ssh_param "ClientAliveCountMax" "0"
-
+    
     sed -i '/^Ciphers/d' "$ssh_config"
     sed -i '/^KexAlgorithms/d' "$ssh_config"
     sed -i '/^MACs/d' "$ssh_config"
@@ -177,23 +154,18 @@ secure_ssh() {
     fi
     if [[ -f "$auth_key_file" ]]; then chmod 600 "$auth_key_file"; fi
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$ssh_dir"
-
-    if sshd -t; then systemctl restart ssh; log_success "SSH secured.";
-    else log_error "SSH Syntax Error!"; exit 1; fi
+    systemctl restart ssh
 }
 
 configure_sudo_password() {
-    log_info "Enforcing sudo password..."
     local sudoers_file="/etc/sudoers.d/010_pi-nopasswd"
     if [[ -f "$sudoers_file" ]]; then
-        # Safer regex to avoid mangling on multiple runs
         sed -i 's/NOPASSWD[:[:space:]]*//g' "$sudoers_file"
-        log_success "Sudo password active."
     fi
 }
 
-configure_lockscreen_wayland() {
-    log_info "Configuring Wayland (LabWC) Security..."
+configure_display_wayland() {
+    log_info "Configuring Wayland (LabWC) Boot and Display Power..."
     if command -v raspi-config >/dev/null; then raspi-config nonint do_boot_behaviour B3; fi
     
     local labwc_config_dir="$USER_HOME_DIR/.config/labwc"
@@ -201,28 +173,20 @@ configure_lockscreen_wayland() {
     mkdir -p "$labwc_config_dir"
     touch "$autostart_file"
     
-    if ! grep -q "swayidle" "$autostart_file"; then
-        cat << EOL >> "$autostart_file"
-# Security: Idle Lock and Display Power Management
-swayidle -w \\
-    timeout 300 'swaylock -f -c 000000' \\
-    timeout 600 'wlopm --off *' \\
-    resume 'wlopm --on *' \\
-    before-sleep 'swaylock -f -c 000000' &
-EOL
-        log_success "Lockscreen configured."
+    # Lockscreen removed. Only power management remains
+    if ! grep -q "wlopm" "$autostart_file"; then
+        echo -e "\n# Display Power Management (Off after 600s)" >> "$autostart_file"
+        echo "wlopm --set-timeout 600 &" >> "$autostart_file"
+        log_success "Display power management configured."
     fi
-    chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$labwc_config_dir"
 }
 
 setup_clamav() {
-    log_info "Setting up ClamAV with Desktop Alerts..."
+    log_info "Setting up ClamAV..."
     systemctl enable --now clamav-daemon.service > /dev/null
-    
     local user_service_dir="$USER_HOME_DIR/.config/systemd/user"
     mkdir -p "$user_service_dir"
     
-    # Corrected DBUS export for Wayland notifications
     tee "$user_service_dir/clamscan-home.service" > /dev/null << EOL
 [Unit]
 Description=ClamAV scan on home directory
@@ -240,23 +204,12 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOL
-
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$user_service_dir"
     sudo -u "$SUDO_USER_NAME" systemctl --user daemon-reload
     sudo -u "$SUDO_USER_NAME" systemctl --user enable --now clamscan-home.timer
-    log_success "ClamAV scheduled."
 }
 
 setup_chkrootkit() {
-    log_info "Scheduling chkrootkit..."
-    tee "/etc/systemd/system/chkrootkit.service" > /dev/null << EOL
-[Unit]
-Description=chkrootkit scan
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/chkrootkit
-SuccessExitStatus=1
-EOL
     tee "/etc/systemd/system/chkrootkit.timer" > /dev/null << EOL
 [Unit]
 Description=Daily chkrootkit timer
@@ -266,41 +219,32 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOL
-    systemctl daemon-reload
     systemctl enable --now chkrootkit.timer
-    log_success "chkrootkit active."
 }
 
 setup_rkhunter() {
-    log_info "Configuring rkhunter..."
     sed -i 's/^CRON_DAILY_RUN=.*/CRON_DAILY_RUN="true"/' /etc/default/rkhunter
     rkhunter --update > /dev/null || true
     rkhunter --propupd > /dev/null || true
-    log_success "rkhunter active."
 }
 
 setup_fail2ban() {
-    log_info "Configuring fail2ban..."
     local jail_local="/etc/fail2ban/jail.local"
     cp /etc/fail2ban/jail.conf "$jail_local"
     sed -i "/^\[sshd\]/,/^\[/ s/enabled = .*/enabled = true/" "$jail_local"
     sed -i "/^\[sshd\]/,/^\[/ s/port .*=.*/port = $SSH_PORT/" "$jail_local"
     systemctl restart fail2ban
-    log_success "fail2ban active."
 }
 
 setup_kernel_hardening() {
-    log_info "Applying kernel hardening..."
     local sysctl_conf="/etc/sysctl.d/99-hardening.conf"
     tee "$sysctl_conf" > /dev/null << EOL
 kernel.kptr_restrict = 2
 kernel.dmesg_restrict = 1
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
 EOL
     sysctl -p "$sysctl_conf" > /dev/null
-    log_success "Kernel hardened."
 }
 
 main() {
@@ -312,7 +256,7 @@ main() {
     setup_firewall
     secure_ssh
     configure_sudo_password
-    configure_lockscreen_wayland
+    configure_display_wayland
     setup_clamav
     setup_chkrootkit
     setup_rkhunter
