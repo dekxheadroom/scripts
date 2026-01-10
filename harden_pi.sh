@@ -3,6 +3,7 @@
 # vibed by Gemini Pro 3.0
 # Hardening Script v3.5 (RAVAGE Edition)
 # Changelog:
+# v3.5.1: fixed path: /proc/meminfo and Use systemd-run or explicit XDG_RUNTIME_DIR for SSH sessions
 # v3.5: Removed swaylock and swayidle because of conflict with 2FA login
 # v3.4: Removed deprecated 'Protocol 2' SSH directive; Fixed DBUS session logic for Wayland/LabWC notifications; Hardened Sudoers regex to prevent mangling on re-runs; Added wlopm to dependencies for display power management
 # v3.3.2: removed conditional statement for notify-send. alert will be sent if XARG process any errors. XARG does not pass on clamav's positive detection
@@ -42,7 +43,8 @@ REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-ser
 check_hardware() {
     if grep -q "Raspberry Pi" /sys/firmware/devicetree/base/model 2>/dev/null; then
         MODEL=$(tr -d '\0' < /sys/firmware/devicetree/base/model)
-        RAM_KB=$(grep MemTotal /proc/proc/meminfo | awk '{print $2}' 2>/dev/null || echo 0)
+        #fixed path: /proc/meminfo
+        RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
         RAM_GB=$((RAM_KB / 1024 / 1024))
         
         clear
@@ -205,8 +207,19 @@ Persistent=true
 WantedBy=timers.target
 EOL
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$user_service_dir"
-    sudo -u "$SUDO_USER_NAME" systemctl --user daemon-reload
-    sudo -u "$SUDO_USER_NAME" systemctl --user enable --now clamscan-home.timer
+    
+    # Fix: Use systemd-run or explicit XDG_RUNTIME_DIR for SSH sessions
+    log_info "Enabling user timer for $SUDO_USER_NAME..."
+    local user_id=$(id -u "$SUDO_USER_NAME")
+    export XDG_RUNTIME_DIR="/run/user/$user_id"
+    
+    sudo -u "$SUDO_USER_NAME" DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$user_id/bus \
+    XDG_RUNTIME_DIR=/run/user/$user_id \
+    systemctl --user daemon-reload
+
+    sudo -u "$SUDO_USER_NAME" DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$user_id/bus \
+    XDG_RUNTIME_DIR=/run/user/$user_id \
+    systemctl --user enable --now clamscan-home.timer
 }
 
 setup_chkrootkit() {
