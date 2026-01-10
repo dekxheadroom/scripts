@@ -3,6 +3,7 @@
 # vibed by Gemini Pro 3.0
 # Hardening Script v3.5 (RAVAGE Edition)
 # Changelog:
+# v3.5.2: improved logging for setting up of clamav
 # v3.5.1: fixed path: /proc/meminfo and Use systemd-run or explicit XDG_RUNTIME_DIR for SSH sessions
 # v3.5: Removed swaylock and swayidle because of conflict with 2FA login
 # v3.4: Removed deprecated 'Protocol 2' SSH directive; Fixed DBUS session logic for Wayland/LabWC notifications; Hardened Sudoers regex to prevent mangling on re-runs; Added wlopm to dependencies for display power management
@@ -208,18 +209,18 @@ WantedBy=timers.target
 EOL
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$user_service_dir"
     
-    # Fix: Use systemd-run or explicit XDG_RUNTIME_DIR for SSH sessions
     log_info "Enabling user timer for $SUDO_USER_NAME..."
     local user_id=$(id -u "$SUDO_USER_NAME")
-    export XDG_RUNTIME_DIR="/run/user/$user_id"
     
-    sudo -u "$SUDO_USER_NAME" DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$user_id/bus \
-    XDG_RUNTIME_DIR=/run/user/$user_id \
-    systemctl --user daemon-reload
+    # Use '|| true' to prevent the script from exiting if the user bus is unreachable
+    sudo -u "$SUDO_USER_NAME" XDG_RUNTIME_DIR=/run/user/$user_id \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$user_id/bus \
+    systemctl --user daemon-reload || log_warn "Could not reload user daemon (Bus unreachable via SSH)."
 
-    sudo -u "$SUDO_USER_NAME" DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$user_id/bus \
-    XDG_RUNTIME_DIR=/run/user/$user_id \
-    systemctl --user enable --now clamscan-home.timer
+    sudo -u "$SUDO_USER_NAME" XDG_RUNTIME_DIR=/run/user/$user_id \ 
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$user_id/bus \
+    systemctl --user enable --now clamscan-home.timer || log_warn "Could not enable user timer (Requires local login)."
+
 }
 
 setup_chkrootkit() {
@@ -265,6 +266,7 @@ main() {
     check_hardware
     ensure_dependencies
     get_user_inputs
+    log_info "--- Starting Configuration ---"
     setup_linger
     setup_firewall
     secure_ssh
@@ -275,6 +277,7 @@ main() {
     setup_rkhunter
     setup_fail2ban
     setup_kernel_hardening
+    log_info "-------------------------------------"
     log_success "Hardening Complete. PLEASE REBOOT."
 }
 
