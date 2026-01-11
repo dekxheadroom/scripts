@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
 # vibed by Gemini Pro 3.0
-# Hardening Script v3.5 (RAVAGE Edition)
+# Hardening Script v3.6 (RAVAGE Edition)
 # Changelog:
+# v3.6: Maintained flattened sudo for SSH session stability
 # v3.5.2: improved logging for setting up of clamav
 # v3.5.1: fixed path: /proc/meminfo and Use systemd-run or explicit XDG_RUNTIME_DIR for SSH sessions
 # v3.5: Removed swaylock and swayidle because of conflict with 2FA login
@@ -32,12 +33,6 @@ log_error() { echo -e "${RED}[ERROR] $1${NC}"; }
 
 # --- Global Variables ---
 SSH_PORT=""
-SSH_KEY_PATH=""
-SKIP_KEY_IMPORT="false"
-SUDO_USER_NAME=""
-USER_HOME_DIR=""
-
-# Removed swayidle and swaylock. Kept wlopm for power management
 REQUIRED_PKGS=(ufw fail2ban clamav clamav-daemon chkrootkit rkhunter openssh-server libnotify-bin mako-notifier wlopm)
 
 # --- 0. The Flex Module ---
@@ -65,7 +60,7 @@ check_hardware() {
         echo -e "${CYAN}>>> MEMORY CAPACITY:   ${RAM_GB}GB (Absolute Unit)${NC}"
         echo -e "${GREEN}>>> STATUS:             Ready to Harden${NC}"
         echo ""
-        sleep 2
+        sleep 1
     fi
 }
 
@@ -91,21 +86,14 @@ ensure_dependencies() {
     done
 }
 
-# --- 2. User Inputs ---
+# --- 2. Interactive Phase ---
 get_user_inputs() {
-    log_info "--- Phase 2: User Configuration ---"
+    log_info "--- Phase 1: Tactical Configuration ---"
     while true; do
-        read -p "Enter a custom SSH port (1025-65535): " SSH_PORT
+        read -p "Enter custom SSH port (1025-65535): " SSH_PORT
         if [[ "$SSH_PORT" -gt 1024 && "$SSH_PORT" -lt 65535 ]]; then break;
-        else log_error "Invalid port range."; fi
+        else log_error "Invalid port selection."; fi
     done
-    read -p "Import public key file? (y/n): " IMPORT_CHOICE
-    if [[ "$IMPORT_CHOICE" =~ ^[Yy]$ ]]; then
-        read -p "Enter path to public SSH key: " INPUT_PATH
-        SSH_KEY_PATH="${INPUT_PATH/#\~/$USER_HOME_DIR}"
-    else
-        SKIP_KEY_IMPORT="true"
-    fi
 }
 
 # --- 3. Hardening Functions ---
@@ -124,40 +112,56 @@ setup_firewall() {
 }
 
 secure_ssh() {
-    log_info "Hardening SSH configuration..."
-    local ssh_config="/etc/ssh/sshd_config"
-    set_ssh_param() {
-        local param="$1"
-        local value="$2"
-        if grep -qE "^\s*#?\s*$param" "$ssh_config"; then
-            sed -i "s|^\s*#\?\s*$param.*|$param $value|" "$ssh_config"
+    log_info "Hardening SSH Gates (Iron Gate Protocol)..."
+    local config="/etc/ssh/sshd_config"
+    
+    # Helper for parameter consistency
+    set_param() {
+        local key="$1"
+        local val="$2"
+        if grep -qE "^\s*#?\s*$key" "$config"; then
+            sed -i "s|^\s*#\?\s*$key.*|$key $val|" "$config"
         else
-            echo "$param $value" >> "$ssh_config"
+            echo "$key $val" >> "$config"
         fi
     }
-    set_ssh_param "Port" "$SSH_PORT"
-    set_ssh_param "PermitRootLogin" "no"
-    set_ssh_param "PasswordAuthentication" "no"
-    set_ssh_param "X11Forwarding" "no"
-    
-    sed -i '/^Ciphers/d' "$ssh_config"
-    sed -i '/^KexAlgorithms/d' "$ssh_config"
-    sed -i '/^MACs/d' "$ssh_config"
 
-    echo "KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256" >> "$ssh_config"
-    echo "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com" >> "$ssh_config"
-    echo "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com" >> "$ssh_config"
+    # 1. Port & Protocol
+    set_param "Port" "$SSH_PORT"
+
+    # 2. Authentication Lockdown
+    set_param "PasswordAuthentication" "no"
+    set_param "PermitRootLogin" "no"
+    set_param "PermitEmptyPasswords" "no"
+    set_param "KbdInteractiveAuthentication" "no"
+    set_param "KerberosAuthentication" "no"
+    set_param "GSSAPIAuthentication" "no"
+    set_param "PubkeyAuthentication" "yes"
+
+    # 3. Surface Area Reduction
+    set_param "X11Forwarding" "no"
+    set_param "AllowAgentForwarding" "no"
+    set_param "AllowTcpForwarding" "no"
+    set_param "PrintLastLog" "yes"
+
+    # 4. Anti-Brute Force / Timeouts
+    set_param "ClientAliveInterval" "300"
+    set_param "ClientAliveCountMax" "0"
+    set_param "MaxAuthTries" "3"
+    set_param "MaxSessions" "2"
+    set_param "LoginGraceTime" "30"
+
+    # 5. Crypto Shield (Explicit Ciphers)
+    sed -i '/^Ciphers/d' "$config"
+    sed -i '/^KexAlgorithms/d' "$config"
+    sed -i '/^MACs/d' "$config"
+
+    echo "KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256" >> "$config"
+    echo "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr" >> "$config"
+    echo "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com" >> "$config"
     
-    local ssh_dir="$USER_HOME_DIR/.ssh"
-    local auth_key_file="$ssh_dir/authorized_keys"
-    mkdir -p "$ssh_dir"
-    chmod 700 "$ssh_dir"
-    if [[ "$SKIP_KEY_IMPORT" == "false" ]]; then
-        cat "$SSH_KEY_PATH" >> "$auth_key_file"
-    fi
-    if [[ -f "$auth_key_file" ]]; then chmod 600 "$auth_key_file"; fi
-    chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$ssh_dir"
-    systemctl restart ssh
+    if sshd -t; then systemctl restart ssh; log_success "Iron Gate Active.";
+    else log_error "SSH Config Error!"; exit 1; fi
 }
 
 configure_sudo_password() {
@@ -185,17 +189,17 @@ configure_display_wayland() {
 }
 
 setup_clamav() {
-    log_info "Setting up ClamAV..."
+    log_info "Deploying ClamAV Watchman..."
     systemctl enable --now clamav-daemon.service > /dev/null
     local user_service_dir="$USER_HOME_DIR/.config/systemd/user"
     mkdir -p "$user_service_dir"
     
     tee "$user_service_dir/clamscan-home.service" > /dev/null << EOL
 [Unit]
-Description=ClamAV scan on home directory
+Description=Daily Home Scan
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'find %h -type f -print0 | xargs -0 -r /usr/bin/clamdscan --fdpass --infected || { export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus; /usr/bin/notify-send "SECURITY ALERT" "Malware detected in %h" --urgency=critical; }'
+ExecStart=/bin/bash -c 'find %h -type f -print0 | xargs -0 -r /usr/bin/clamdscan --fdpass --infected || { export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus; /usr/bin/notify-send "MALWARE ALERT" "Infection in %h" --urgency=critical; }'
 EOL
 
     tee "$user_service_dir/clamscan-home.timer" > /dev/null << EOL
@@ -207,33 +211,26 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOL
+
     chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$user_service_dir"
+    local uid=$(id -u "$SUDO_USER_NAME")
     
-    log_info "Enabling user timer for $SUDO_USER_NAME..."
-    local user_id=$(id -u "$SUDO_USER_NAME")
-    
-    # Use '|| true' to prevent the script from exiting if the user bus is unreachable
-    sudo -u "$SUDO_USER_NAME" XDG_RUNTIME_DIR=/run/user/$user_id \
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$user_id/bus \
-    systemctl --user daemon-reload || log_warn "Could not reload user daemon (Bus unreachable via SSH)."
-
-    sudo -u "$SUDO_USER_NAME" XDG_RUNTIME_DIR=/run/user/$user_id \ 
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$user_id/bus \
-    systemctl --user enable --now clamscan-home.timer || log_warn "Could not enable user timer (Requires local login)."
-
+    sudo -u "$SUDO_USER_NAME" XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user daemon-reload || true
+    sudo -u "$SUDO_USER_NAME" XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user enable --now clamscan-home.timer || true
 }
 
 setup_chkrootkit() {
+    log_info "Scheduling Rootkit Checks..."
     tee "/etc/systemd/system/chkrootkit.timer" > /dev/null << EOL
 [Unit]
-Description=Daily chkrootkit timer
+Description=Daily chkrootkit
 [Timer]
 OnCalendar=daily
 Persistent=true
 [Install]
 WantedBy=timers.target
 EOL
-    systemctl enable --now chkrootkit.timer
+    systemctl daemon-reload && systemctl enable --now chkrootkit.timer > /dev/null
 }
 
 setup_rkhunter() {
@@ -243,22 +240,22 @@ setup_rkhunter() {
 }
 
 setup_fail2ban() {
-    local jail_local="/etc/fail2ban/jail.local"
-    cp /etc/fail2ban/jail.conf "$jail_local"
-    sed -i "/^\[sshd\]/,/^\[/ s/enabled = .*/enabled = true/" "$jail_local"
-    sed -i "/^\[sshd\]/,/^\[/ s/port .*=.*/port = $SSH_PORT/" "$jail_local"
+    log_info "Arming Fail2Ban..."
+    cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+    sed -i "/^\[sshd\]/,/^\[/ s/enabled = .*/enabled = true/" /etc/fail2ban/jail.local
+    sed -i "/^\[sshd\]/,/^\[/ s/port .*=.*/port = $SSH_PORT/" /etc/fail2ban/jail.local
     systemctl restart fail2ban
 }
 
 setup_kernel_hardening() {
-    local sysctl_conf="/etc/sysctl.d/99-hardening.conf"
-    tee "$sysctl_conf" > /dev/null << EOL
+    log_info "Casting the Heavenly Net (Kernel)..."
+    tee "/etc/sysctl.d/99-hardening.conf" > /dev/null << EOL
 kernel.kptr_restrict = 2
 kernel.dmesg_restrict = 1
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.accept_redirects = 0
 EOL
-    sysctl -p "$sysctl_conf" > /dev/null
+    sysctl -p "/etc/sysctl.d/99-hardening.conf" > /dev/null
 }
 
 main() {
