@@ -3,6 +3,7 @@
 # vibed by Gemini Pro 3.0
 # Hardening Script v3.6 (RAVAGE Edition)
 # Changelog:
+# v3.7: removed configure_display_wayland() as it does not add value to hardening
 # v3.6.1: modified configure_display_wayland() to boot to GUI login
 # v3.6: Maintained flattened sudo for SSH session stability
 # v3.5.2: improved logging for setting up of clamav
@@ -172,30 +173,6 @@ configure_sudo_password() {
     fi
 }
 
-configure_display_wayland() {
-    log_info "Configuring Wayland (LabWC) Boot and Display Power..."
-    
-    # 
-    # Change B3 (Console Autologin) to B4 (Desktop Autologin) 
-    # OR B2 (Desktop Login Screen - Recommended for your 2FA setup)
-    if command -v raspi-config >/dev/null; then 
-        raspi-config nonint do_boot_behaviour B2
-        log_success "Boot behavior set to Graphical Login Screen (B2)."
-    fi
-    
-    local labwc_config_dir="$USER_HOME_DIR/.config/labwc"
-    local autostart_file="$labwc_config_dir/autostart"
-    mkdir -p "$labwc_config_dir"
-    
-    #
-    if ! grep -q "wlopm" "$autostart_file" 2>/dev/null; then
-        echo -e "\n# Display Power Management (Off after 600s)" >> "$autostart_file"
-        echo "wlopm --set-timeout 600 &" >> "$autostart_file"
-        log_success "Display power management configured."
-    fi
-    chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$labwc_config_dir"
-}
-
 setup_clamav() {
     log_info "Deploying ClamAV Watchman..."
     systemctl enable --now clamav-daemon.service > /dev/null
@@ -276,7 +253,6 @@ main() {
     setup_firewall
     secure_ssh
     configure_sudo_password
-    configure_display_wayland
     setup_clamav
     setup_chkrootkit
     setup_rkhunter
